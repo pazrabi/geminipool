@@ -30,7 +30,7 @@ async def main() -> None:
     data = Path(os.environ.get("POOL_DATA", "/data"))
     pool = Pool(
         data_dir=data,
-        runner=executor.gemini_runner,
+        runner=executor.agy_runner,
         accounts=load_accounts(data),
         push_token=os.environ.get("GIT_PUSH_TOKEN") or None,
     )

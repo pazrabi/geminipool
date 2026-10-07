@@ -1,4 +1,4 @@
-"""Runs one agent task with the Gemini CLI in headless mode."""
+"""Runs one agent task with the Antigravity CLI (agy) in print mode."""
 
 from __future__ import annotations
 
@@ -10,20 +10,20 @@ from pathlib import Path
 
 from pool import RunResult
 
-GEMINI_BIN = os.environ.get("GEMINI_BIN", "gemini")
+AGY_BIN = os.environ.get("AGY_BIN", "agy")
 
 
-async def gemini_runner(
+async def agy_runner(
     *,
     prompt: str,
     workdir: Path,
     env: dict[str, str],
     timeout: float,
 ) -> RunResult:
-    args = [GEMINI_BIN, "-p", prompt, "-o", "json", "--approval-mode", "yolo", "--skip-trust"]
-    model = os.environ.get("GEMINI_MODEL")
+    args = [AGY_BIN, "-p", prompt, "--output-format", "json", "--dangerously-skip-permissions"]
+    model = os.environ.get("AGY_MODEL")
     if model:
-        args += ["-m", model]
+        args += ["--model", model]
     proc = await asyncio.create_subprocess_exec(
         *args,
         cwd=str(workdir),

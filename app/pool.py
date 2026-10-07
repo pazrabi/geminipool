@@ -289,7 +289,8 @@ class Pool:
     # ---- execution -----------------------------------------------------
 
     def _agent_env(self, account_id: str) -> dict[str, str]:
-        """Environment for the Gemini CLI. Deliberately excludes GIT_PUSH_TOKEN."""
+        """Environment for agy. HOME is the account's profile (that is where its Google login lives).
+        Deliberately excludes GIT_PUSH_TOKEN."""
         home = self.profiles / account_id
         home.mkdir(parents=True, exist_ok=True)
         env = {
@@ -299,16 +300,13 @@ class Pool:
             "GIT_TERMINAL_PROMPT": "0",
             "CI": "1",
         }
-        key = os.environ.get(f"GEMINI_API_KEY_{account_id.upper()}") or os.environ.get("GEMINI_API_KEY")
-        if key:
-            env["GEMINI_API_KEY"] = key
         proxy = self.accounts_cfg.get(account_id, {}).get("proxy")
         if proxy:
             env["HTTPS_PROXY"] = proxy
         return env
 
     def _test_env(self) -> dict[str, str]:
-        return {k: v for k, v in os.environ.items() if not k.startswith(("GEMINI", "GIT_PUSH"))}
+        return {k: v for k, v in os.environ.items() if not k.startswith(("GEMINI", "AGY", "GIT_PUSH"))}
 
     async def _execute(self, task_id: str, account_id: str) -> None:
         try:
