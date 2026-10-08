@@ -88,6 +88,55 @@ class WatchTests(unittest.TestCase):
         self.assertIn("tests=failed", out)
         self.assertIn("reason=internal", out)
 
+    def add_pipeline(self, task_id, status, summary, steps_updated=None):
+        self.add_task(task_id, "done", {"summary": "dev part"}, started=time.time() - 300)
+        now = time.time()
+        conn = sqlite3.connect(self.pool.db_path)
+        conn.execute("UPDATE tasks SET pipeline_id = ?, stage = 'develop' WHERE id = ?", (task_id, task_id))
+        conn.execute(
+            "INSERT INTO pipelines (id, goal, max_rounds, status, reason, final_task_id, summary, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (task_id, "g", 3, status, summary.get("reason"), task_id, json.dumps(summary), now - 600, now))
+        conn.commit()
+        conn.close()
+
+    def test_an_approved_pipeline_reports_rounds_and_verdict(self):
+        self.add_pipeline("a1a1a1a1a1a1", "approved", {
+            "status": "approved", "verdict": "APPROVE", "rounds": 2, "branch": "pool/b2b2b2b2b2b2", "pushed": True,
+            "changed_files": ["a.py", "b.py", "c.py"], "tests": {"passed": True, "tail": INJECTION},
+            "review_summary": INJECTION, "summary": INJECTION, "model": "gemini-3.8-flash-high"})
+        line = self.watch("a1a1a1a1a1a1").stdout.strip()
+        for part in ("status=done", "rounds=2", "verdict=approved", "branch=pool/b2b2b2b2b2b2", "files=3",
+                     "tests=passed", "pushed=True", "duration=600s"):
+            self.assertIn(part, line)
+        self.assertNotIn("IGNORE", line)
+
+    def test_a_pipeline_that_needs_the_lead_says_why(self):
+        self.add_pipeline("a2a2a2a2a2a2", "needs_lead", {
+            "status": "needs_lead", "reason": "max_rounds", "rounds": 3, "branch": "pool/c3c3c3c3c3c3",
+            "review_summary": INJECTION, "tests": {"passed": False, "tail": INJECTION}})
+        line = self.watch("a2a2a2a2a2a2").stdout.strip()
+        for part in ("status=needs_lead", "reason=max_rounds", "rounds=3"):
+            self.assertIn(part, line)
+        self.assertNotIn("verdict=", line)
+        self.assertNotIn("IGNORE", line)
+
+    def test_an_unfinished_pipeline_keeps_the_watcher_waiting(self):
+        self.add_pipeline("a3a3a3a3a3a3", "active", {})
+        threading.Timer(1.0, lambda: self.finish_pipeline("a3a3a3a3a3a3")).start()
+        began = time.time()
+        proc = self.watch("a3a3a3a3a3a3")
+        self.assertGreaterEqual(time.time() - began, 0.9)  # the developer was done long ago; the pipeline was not
+        self.assertIn("verdict=approved", proc.stdout)
+
+    def finish_pipeline(self, pipeline_id):
+        conn = sqlite3.connect(self.pool.db_path)
+        conn.execute("UPDATE pipelines SET status = 'approved', summary = ?, updated_at = ? WHERE id = ?",
+                     (json.dumps({"status": "approved", "verdict": "APPROVE", "rounds": 1, "branch": "pool/x",
+                                  "changed_files": ["a"], "pushed": True}), time.time(), pipeline_id))
+        conn.commit()
+        conn.close()
+
     def test_failure_reasons_are_categories(self):
         cases = {"quota limit": "quota", "account auth error": "auth", "network error": "network",
                  "timeout": "timeout", "agent exited with code 1": "agent_error", "something odd": "unknown"}

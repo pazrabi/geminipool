@@ -62,12 +62,14 @@ def strip_all(worktrees: Path) -> int:
 def _retire(pool: "Pool", wt: Path, task: dict[str, Any] | None, pushed: bool) -> None:
     repo_dir = git_ops.repo_dir(pool.repos, task["repo"]) if task else None
     if repo_dir is not None and repo_dir.is_dir():
-        git_ops._git(["worktree", "remove", "--force", str(wt)], cwd=repo_dir, check=False)
-    shutil.rmtree(wt, ignore_errors=True)
-    if repo_dir is not None and repo_dir.is_dir():
-        git_ops._git(["worktree", "prune"], cwd=repo_dir, check=False)
-        if pushed:  # the branch lives on GitHub; an unpushed one is the only copy and stays
-            git_ops._git(["branch", "-D", f"pool/{task['id']}"], cwd=repo_dir, check=False)
+        with git_ops.repo_lock(repo_dir):
+            git_ops._git(["worktree", "remove", "--force", str(wt)], cwd=repo_dir, check=False)
+            shutil.rmtree(wt, ignore_errors=True)
+            git_ops._git(["worktree", "prune"], cwd=repo_dir, check=False)
+            if pushed:  # the branch lives on GitHub; an unpushed one is the only copy and stays
+                git_ops._git(["branch", "-D", f"pool/{task['id']}"], cwd=repo_dir, check=False)
+    else:
+        shutil.rmtree(wt, ignore_errors=True)
 
 
 def cleanup(pool: "Pool", aggressive: bool = False) -> dict[str, int]:
@@ -88,6 +90,8 @@ def cleanup(pool: "Pool", aggressive: bool = False) -> dict[str, int]:
                 _retire(pool, wt, None, False)
                 retired += 1
             continue
+        if task.get("pipeline_id") and pool.pipeline_active(task["pipeline_id"]):
+            continue  # a later stage may still start from this commit
         report = task["report"] or {}
         age = now - task["updated_at"]
         pushed = bool(report.get("pushed"))

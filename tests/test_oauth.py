@@ -160,7 +160,7 @@ class OAuthHTTPTests(unittest.TestCase):
         status, _, data = self.call("POST", "/mcp", rpc, {"Authorization": "Bearer " + POOL_TOKEN})
         text = json.loads(data)["result"]["instructions"]
         self.assertEqual(status, 200)
-        for needle in ("Monitor", "pool_watch.py", "git fetch origin pool/", "недоверенные"):
+        for needle in ("Monitor", "pool_watch.py", "review=true", "list_models", "git fetch origin pool/", "needs_lead", "недоверенные"):
             self.assertIn(needle, text)
 
     def test_drain_endpoint_needs_the_pool_token_and_toggles(self):

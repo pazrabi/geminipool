@@ -37,6 +37,10 @@ AUTH_RE = re.compile(
 )
 NETWORK_RE = re.compile(r"ECONNRESET|ETIMEDOUT|ENOTFOUND|fetch failed|socket hang up", re.I)
 
+MAX_ROUNDS_DEFAULT = 3
+FINDINGS_LIMIT = 6000
+VERDICT_RE = re.compile(r"VERDICT:\s*(APPROVE|CHANGES)\b", re.I)
+
 ROLE_TEXT = {
     "developer": (
         "Implement the goal below. Change only files that match the allowed patterns. "
@@ -49,6 +53,21 @@ ROLE_TEXT = {
     "debugger": (
         "Find the root cause of the problem described below and fix it with a minimal change. "
         "Change only files that match the allowed patterns. Do not push anything."
+    ),
+    # Pipeline stages. The reviewer's answer ends with a machine-read verdict line.
+    "review": (
+        "You are the code reviewer. The code to review is already in this working copy (HEAD). Compare it with the "
+        "base: `git diff origin/{base}...HEAD`. Do NOT modify, create, delete, commit or push anything. Check that the "
+        "change does what the task asks, look for bugs, missed cases, security problems and broken project rules (if the "
+        "repository root has CLAUDE.md or a docs/*GUIDE* file, follow it), and whether tests cover the change. Run the "
+        "project's tests (command below). Write the findings in Russian: file:line, the problem, how to fix it, the most "
+        "severe first. Finish with exactly one last line: `VERDICT: APPROVE` if there is nothing blocking, otherwise "
+        "`VERDICT: CHANGES`."
+    ),
+    "rework": (
+        "A reviewer found problems in the code that is already in this working copy (it starts from the previous "
+        "attempt). Fix every blocking finding listed in the goal below, keep the rest of the change, and re-run the "
+        "tests. Change only files that match the allowed patterns. Do not push anything."
     ),
 }
 
@@ -63,12 +82,29 @@ CREATE TABLE IF NOT EXISTS tasks (
     test_cmd TEXT,
     model TEXT,
     started_at REAL,
+    pipeline_id TEXT,
+    stage TEXT,
+    round INTEGER NOT NULL DEFAULT 1,
+    base_ref TEXT,
+    parent_id TEXT,
     status TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
     account_id TEXT,
     branch TEXT,
     report TEXT,
     not_before REAL NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pipelines (
+    id TEXT PRIMARY KEY,
+    goal TEXT NOT NULL,
+    review_model TEXT,
+    max_rounds INTEGER NOT NULL DEFAULT 3,
+    status TEXT NOT NULL DEFAULT 'active',
+    reason TEXT,
+    final_task_id TEXT,
+    summary TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -111,12 +147,72 @@ Runner = Callable[..., Awaitable[RunResult]]
 
 
 def build_prompt(task: dict[str, Any]) -> str:
+    stage = task.get("stage")
+    key = stage if stage in ("review", "rework") else task["role"]
+    text = ROLE_TEXT[key].replace("{base}", task["base_branch"])
+    allowed = "" if stage == "review" else f"Allowed file patterns: {', '.join(task['allowed_files'])}\n"
     return (
-        f"{ROLE_TEXT[task['role']]}\n\n"
+        f"{text}\n\n"
         f"Goal:\n{task['goal']}\n\n"
-        f"Allowed file patterns: {', '.join(task['allowed_files'])}\n"
+        + allowed
         + (f"Tests that must pass: {task['test_cmd']}\n" if task["test_cmd"] else "")
     )
+
+
+def parse_verdict(text: str) -> str | None:
+    """The reviewer's last `VERDICT: APPROVE|CHANGES` line, or None if there is none."""
+    found = VERDICT_RE.findall(text or "")
+    return found[-1].upper() if found else None
+
+
+def strip_verdict(text: str) -> str:
+    return "\n".join(line for line in (text or "").splitlines() if not VERDICT_RE.search(line)).strip()
+
+
+def failure_reason(report: dict[str, Any] | None) -> str:
+    report = report or {}
+    if report.get("violations"):
+        return "violation"
+    error = str(report.get("error") or "")
+    for prefix, name in (("internal", "internal"), ("quota", "quota"), ("account auth", "auth"),
+                         ("network", "network"), ("timeout", "timeout"), ("agent exited", "agent_error")):
+        if error.startswith(prefix):
+            return name
+    return "unknown"
+
+
+def _literal_prefix(pattern: str) -> str:
+    cut = min([i for i in (pattern.find(c) for c in "*?[") if i >= 0], default=len(pattern))
+    return pattern[:cut]
+
+
+def patterns_overlap(a: list[str], b: list[str]) -> tuple[str, str] | None:
+    """A cheap check whether two sets of file globs can touch the same files: the fixed beginnings must nest."""
+    for x in a:
+        for y in b:
+            px, py = _literal_prefix(x), _literal_prefix(y)
+            if px.startswith(py) or py.startswith(px):
+                return x, y
+    return None
+
+
+_MODEL_RE = re.compile(r"gemini-(\d+(?:\.\d+)?)-(flash|pro)(?:-(low|medium|high))?$")
+_MODEL_HINTS = {
+    ("flash", "low"): "fastest and lightest: mechanical edits, renames, docs, small well-specified changes",
+    ("flash", "medium"): "fast, a little reasoning: ordinary tasks with a clear specification",
+    ("flash", "high"): "fast with deep reasoning: typical feature work and tests; a good default developer",
+    ("pro", "low"): "stronger than Flash with modest reasoning: tricky logic and careful review without long deliberation",
+    ("pro", "high"): "strongest and slowest: complex or risky changes (money, security, database schema), hard reviews",
+}
+
+
+def model_hint(model_id: str) -> dict[str, Any]:
+    """Guidance read off the model id (family, generation, reasoning effort). Heuristics, not measurements."""
+    m = _MODEL_RE.match(model_id)
+    if not m:
+        return {"family": None, "generation": None, "effort": None, "hint": None}
+    generation, family, effort = float(m.group(1)), m.group(2), m.group(3)
+    return {"family": family, "generation": generation, "effort": effort, "hint": _MODEL_HINTS.get((family, effort))}
 
 
 def extract_summary(stdout: str) -> str:
@@ -226,7 +322,8 @@ class Pool:
         conn.executescript(SCHEMA)
         # Databases created before these columns existed get them added in place.
         existing = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
-        for column in ("model TEXT", "started_at REAL"):
+        for column in ("model TEXT", "started_at REAL", "pipeline_id TEXT", "stage TEXT",
+                       "round INTEGER NOT NULL DEFAULT 1", "base_ref TEXT", "parent_id TEXT"):
             if column.split()[0] not in existing:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {column}")
         conn.close()
@@ -451,7 +548,28 @@ class Pool:
         base_branch: str = "main",
         test_cmd: str | None = None,
         model: str | None = None,
+        review: bool = False,
+        review_model: str | None = None,
+        max_rounds: int = MAX_ROUNDS_DEFAULT,
     ) -> str:
+        return self.submit_with_info(role, goal, repo, allowed_files, base_branch, test_cmd, model,
+                                     review, review_model, max_rounds)["task_id"]
+
+    def submit_with_info(
+        self,
+        role: str,
+        goal: str,
+        repo: str,
+        allowed_files: list[str],
+        base_branch: str = "main",
+        test_cmd: str | None = None,
+        model: str | None = None,
+        review: bool = False,
+        review_model: str | None = None,
+        max_rounds: int = MAX_ROUNDS_DEFAULT,
+    ) -> dict[str, Any]:
+        """Queue a task. With review=True it becomes a pipeline: develop, then an automatic review by a reviewer
+        agent, with up to max_rounds of rework until the reviewer approves. Returns the task id and any warnings."""
         if role not in ROLES:
             raise ValueError(f"role must be one of {', '.join(ROLES)}")
         if not goal or not goal.strip():
@@ -463,19 +581,65 @@ class Pool:
         model = (model or "").strip() or None
         if model:
             self._check_model(model)
+        review_model = (review_model or "").strip() or None
+        if review:
+            if role == "reviewer":
+                raise ValueError("a reviewer task cannot itself be reviewed")
+            if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or not 1 <= max_rounds <= 5:
+                raise ValueError("max_rounds must be a whole number from 1 to 5")
+            if review_model:
+                self._check_model(review_model)
+        warnings = self._overlap_warnings(repo, allowed_files)
+        if review and not self._has_usable_reviewer():
+            warnings.append("no reviewer agent is available yet: the review will wait in the queue")
         with self._repo_lock:
             repo_path = git_ops.ensure_repo(repo, self.repos, self.push_token)
             git_ops.check_branch(repo_path, base_branch)
         task_id = uuid.uuid4().hex[:12]
         t = time.time()
         conn = self._db()
-        conn.execute(
-            "INSERT INTO tasks (id, role, goal, repo, base_branch, allowed_files, test_cmd, model, status,"
-            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
-            (task_id, role, goal, repo, base_branch, json.dumps(allowed_files), test_cmd, model, t, t),
-        )
-        conn.close()
-        return task_id
+        try:
+            conn.execute(
+                "INSERT INTO tasks (id, role, goal, repo, base_branch, allowed_files, test_cmd, model, status,"
+                " pipeline_id, stage, round, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, 1, ?, ?)",
+                (task_id, role, goal, repo, base_branch, json.dumps(allowed_files), test_cmd, model,
+                 task_id if review else None, "develop" if review else None, t, t),
+            )
+            if review:
+                conn.execute(
+                    "INSERT INTO pipelines (id, goal, review_model, max_rounds, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                    (task_id, goal, review_model, max_rounds, t, t),
+                )
+        finally:
+            conn.close()
+        return {"task_id": task_id, "pipeline": bool(review), "warnings": warnings}
+
+    def _has_usable_reviewer(self) -> bool:
+        for acc in self.list_accounts():
+            if acc["role"] == "reviewer" and acc["enabled"] and acc["state"] != "auth_error" and (
+                not self.require_login or acc["logged_in"]
+            ):
+                return True
+        return False
+
+    def _overlap_warnings(self, repo: str, allowed: list[str]) -> list[str]:
+        """Tell the lead when new work may touch the same files as work still in flight in the same repository."""
+        conn = self._db()
+        try:
+            rows = conn.execute(
+                "SELECT id, allowed_files FROM tasks WHERE repo = ? AND role != 'reviewer' AND ("
+                " status IN ('queued', 'running') OR pipeline_id IN (SELECT id FROM pipelines WHERE status = 'active'))",
+                (repo,),
+            ).fetchall()
+        finally:
+            conn.close()
+        out, seen = [], set()
+        for row in rows:
+            hit = patterns_overlap(allowed, json.loads(row["allowed_files"]))
+            if hit and row["id"] not in seen:
+                seen.add(row["id"])
+                out.append(f"may conflict with task {row['id']} (still in flight): both can change {hit[0]} / {hit[1]}")
+        return out
 
     # ---- scheduling ----------------------------------------------------
 
@@ -638,7 +802,7 @@ class Pool:
         wt = self.worktrees / task_id
         branch = f"pool/{task_id}"
         await asyncio.to_thread(
-            git_ops.prepare_worktree, repo_path, wt, task_id, base, self.push_token, self.nohooks
+            git_ops.prepare_worktree, repo_path, wt, task_id, base, self.push_token, self.nohooks, task["base_ref"]
         )
         self._exec("UPDATE tasks SET branch = ? WHERE id = ?", (branch, task_id))
 
@@ -677,7 +841,10 @@ class Pool:
         self, task: dict[str, Any], account_id: str, summary: str, wt: Path, branch: str, model: str | None
     ) -> None:
         task_id, base = task["id"], task["base_branch"]
-        changed, stats = await asyncio.to_thread(git_ops.stage_and_diff, wt, base)
+        # Test runs by the agent leave virtualenvs and caches behind; they must not count as changes.
+        await asyncio.to_thread(housekeeping.strip_heavy, wt)
+        ref = task["base_ref"] or f"origin/{base}"
+        changed, stats = await asyncio.to_thread(git_ops.stage_and_diff, wt, ref)
 
         violations = []
         if task["role"] == "reviewer" and changed:
@@ -704,6 +871,7 @@ class Pool:
                     self._event("push_error", account_id, task_id, push_error)
         for violation in violations:
             self._event("violation", account_id, task_id, violation)
+        head = await asyncio.to_thread(git_ops.head_sha, wt)
 
         report = {
             "summary": summary,
@@ -712,6 +880,7 @@ class Pool:
             "violations": violations,
             "tests": tests,
             "branch": branch,
+            "head": head,
             "pushed": pushed,
             "push_error": push_error,
             "account": account_id,
@@ -737,6 +906,250 @@ class Pool:
             return False, "tests timed out"
         return proc.returncode == 0, out.decode(errors="replace")[-4000:]
 
+    # ---- pipelines: develop -> review -> rework -> approved ---------------------------------------------------------
+
+    def get_pipeline(self, pipeline_id: str) -> dict[str, Any] | None:
+        conn = self._db()
+        try:
+            row = conn.execute("SELECT * FROM pipelines WHERE id = ?", (pipeline_id,)).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        d = dict(row)
+        d["summary"] = json.loads(d["summary"]) if d["summary"] else None
+        return d
+
+    def pipeline_active(self, pipeline_id: str) -> bool:
+        pipe = self.get_pipeline(pipeline_id)
+        return bool(pipe and pipe["status"] == "active")
+
+    def _pipeline_tasks(self, pipeline_id: str) -> list[dict[str, Any]]:
+        conn = self._db()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE pipeline_id = ? ORDER BY created_at, rowid", (pipeline_id,)
+            ).fetchall()
+        finally:
+            conn.close()
+        return [self._task_dict(r) for r in rows]
+
+    def _insert_stage_task(self, pipe: dict[str, Any], parent: dict[str, Any], role: str, stage: str, goal: str,
+                           base_ref: str, round_no: int, model: str | None, allowed: list[str]) -> str:
+        task_id = uuid.uuid4().hex[:12]
+        t = time.time()
+        self._exec(
+            "INSERT INTO tasks (id, role, goal, repo, base_branch, allowed_files, test_cmd, model, status, pipeline_id,"
+            " stage, round, base_ref, parent_id, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
+            (task_id, role, goal, parent["repo"], parent["base_branch"], json.dumps(allowed), parent["test_cmd"], model,
+             pipe["id"], stage, round_no, base_ref, parent["id"], t, t),
+        )
+        return task_id
+
+    def _has_child(self, parent_id: str, stage: str) -> bool:
+        conn = self._db()
+        try:
+            return conn.execute(
+                "SELECT 1 FROM tasks WHERE parent_id = ? AND stage = ?", (parent_id, stage)
+            ).fetchone() is not None
+        finally:
+            conn.close()
+
+    def _after_terminal(self, task_id: str) -> None:
+        """Called whenever a task reaches done or failed. For pipeline tasks this decides what happens next."""
+        task = self.get_task(task_id)
+        if task is None or not task.get("pipeline_id"):
+            return
+        pipe = self.get_pipeline(task["pipeline_id"])
+        tasks = self._pipeline_tasks(task["pipeline_id"])
+        if pipe is None or not tasks or tasks[-1]["id"] != task_id:
+            return  # an older task cannot steer a pipeline that has moved on
+        report = task["report"] or {}
+        stage = task["stage"]
+        if pipe["status"] != "active":  # e.g. a failed task was recovered and now succeeded
+            self._exec("UPDATE pipelines SET status = 'active', reason = NULL, summary = NULL, updated_at = ? WHERE id = ?",
+                       (time.time(), pipe["id"]))
+        if stage in ("develop", "rework"):
+            if task["status"] != "done":
+                return self._end_pipeline(pipe, "failed", failure_reason(report), task)
+            if not report.get("changed_files"):
+                return self._end_pipeline(pipe, "needs_lead", "no_changes", task)
+            if not self._has_child(task_id, "review"):
+                self._queue_review(pipe, task, report)
+        elif stage == "review":
+            dev = self.get_task(task["parent_id"]) if task.get("parent_id") else None
+            if dev is None:
+                return self._end_pipeline(pipe, "needs_lead", "review_failed", task)
+            if task["status"] != "done":
+                return self._end_pipeline(pipe, "needs_lead", "review_failed", dev, review=task)
+            verdict = parse_verdict(report.get("summary", ""))
+            tests = report.get("tests")
+            tests_failed = bool(tests) and not tests.get("passed")
+            if verdict is None:
+                return self._end_pipeline(pipe, "needs_lead", "review_no_verdict", dev, review=task)
+            if verdict == "APPROVE" and not tests_failed:
+                return self._end_pipeline(pipe, "approved", None, dev, review=task)
+            if task["round"] >= pipe["max_rounds"]:
+                return self._end_pipeline(pipe, "needs_lead", "max_rounds", dev, review=task)
+            if not self._has_child(task_id, "rework"):
+                self._queue_rework(pipe, task, dev, tests_failed, tests)
+
+    def _queue_review(self, pipe: dict[str, Any], dev: dict[str, Any], report: dict[str, Any]) -> None:
+        goal = f"Review of {dev['id']} (round {dev['round']}): {pipe['goal']}"
+        self._insert_stage_task(pipe, dev, "reviewer", "review", goal, report["head"], dev["round"],
+                                pipe["review_model"], [])
+        if not self._has_usable_reviewer():
+            try:
+                self._event("no_reviewer", None, dev["id"], "The change waits for review, but no reviewer agent is available.")
+            except Exception:
+                pass
+
+    def _queue_rework(self, pipe: dict[str, Any], review: dict[str, Any], dev: dict[str, Any],
+                      tests_failed: bool, tests: dict[str, Any] | None) -> None:
+        report = review["report"] or {}
+        findings = strip_verdict(report.get("summary", ""))
+        if tests_failed:
+            findings += f"\n\nThe test command also failed ({tests.get('cmd')}). Its output ended with:\n{tests.get('tail', '')[-1500:]}"
+        findings = findings[:FINDINGS_LIMIT]
+        goal = f"{pipe['goal']}\n\nReviewer findings to fix (review {review['round']} of {pipe['max_rounds']}):\n{findings}"
+        self._insert_stage_task(pipe, review, dev["role"], "rework", goal, review["base_ref"], review["round"] + 1,
+                                dev["model"], dev["allowed_files"])
+
+    def _end_pipeline(self, pipe: dict[str, Any], status: str, reason: str | None, dev: dict[str, Any],
+                      review: dict[str, Any] | None = None) -> None:
+        summary = self._pipeline_summary(pipe, status, reason, dev, review)
+        self._exec(
+            "UPDATE pipelines SET status = ?, reason = ?, final_task_id = ?, summary = ?, updated_at = ? WHERE id = ?",
+            (status, reason, dev["id"], json.dumps(summary, ensure_ascii=False), time.time(), pipe["id"]),
+        )
+
+    def _pipeline_summary(self, pipe: dict[str, Any], status: str, reason: str | None, dev: dict[str, Any],
+                          review: dict[str, Any] | None) -> dict[str, Any]:
+        """The report the lead reads: what was built, how the review went, which branch to take."""
+        dev_report = dev["report"] or {}
+        review_report = (review["report"] or {}) if review else {}
+        files, stats = dev_report.get("changed_files") or [], dev_report.get("stats")
+        head = dev_report.get("head")
+        if head:  # everything the pipeline changed, not only the last round
+            try:
+                repo_path = git_ops.repo_dir(self.repos, dev["repo"])
+                files, stats = git_ops.diff_summary(repo_path, f"origin/{dev['base_branch']}", head)
+            except Exception:
+                log.exception("could not summarise the pipeline diff")
+        return {
+            "status": status,
+            "reason": reason,
+            "verdict": parse_verdict(review_report.get("summary", "")) if review else None,
+            "rounds": (review or dev)["round"],
+            "max_rounds": pipe["max_rounds"],
+            "final_task": dev["id"],
+            "branch": dev.get("branch"),
+            "head": head,
+            "pushed": bool(dev_report.get("pushed")),
+            "changed_files": files,
+            "stats": stats,
+            "violations": dev_report.get("violations") or [],
+            "summary": dev_report.get("summary"),
+            "review_summary": strip_verdict(review_report.get("summary", ""))[:4000] if review else None,
+            "tests": review_report.get("tests") or dev_report.get("tests"),
+            "dev_tests": dev_report.get("tests"),
+            "account": dev_report.get("account"),
+            "model": dev_report.get("model"),
+            "reviewer_model": review_report.get("model") if review else None,
+            "reviewer_account": review_report.get("account") if review else None,
+            "error": dev_report.get("error"),
+        }
+
+    def _pipeline_stage(self, pipe: dict[str, Any], tasks: list[dict[str, Any]]) -> tuple[str, int, bool]:
+        """(stage, round, waiting): where the pipeline is now and whether it is queued rather than running."""
+        last = tasks[-1] if tasks else None
+        if pipe["status"] != "active":
+            return pipe["status"], (last["round"] if last else 1), False
+        if last is None:
+            return "develop", 1, True
+        waiting = last["status"] == "queued"
+        if last["stage"] == "review":
+            return ("awaiting_review" if waiting else "review"), last["round"], waiting
+        return ("rework" if last["stage"] == "rework" else "develop"), last["round"], waiting
+
+    def pipeline_view(self, pipe: dict[str, Any]) -> dict[str, Any]:
+        tasks = self._pipeline_tasks(pipe["id"])
+        stage, round_no, waiting = self._pipeline_stage(pipe, tasks)
+        steps = []
+        for t in tasks:
+            report = t["report"] or {}
+            steps.append({
+                "task_id": t["id"], "stage": t["stage"], "round": t["round"], "status": t["status"],
+                "account_id": t["account_id"], "model": report.get("model") or t["model"],
+                "started_at": t["started_at"], "updated_at": t["updated_at"], "created_at": t["created_at"],
+                "verdict": parse_verdict(report.get("summary", "")) if t["stage"] == "review" else None,
+            })
+        return {
+            "id": pipe["id"], "goal": pipe["goal"], "status": pipe["status"], "reason": pipe["reason"],
+            "stage": stage, "round": round_no, "waiting": waiting, "max_rounds": pipe["max_rounds"],
+            "review_model": pipe["review_model"], "steps": steps,
+            "created_at": pipe["created_at"], "updated_at": pipe["updated_at"],
+        }
+
+    def list_pipelines(self, limit: int = 12) -> list[dict[str, Any]]:
+        conn = self._db()
+        try:
+            ids = [r["id"] for r in conn.execute("SELECT id FROM pipelines ORDER BY created_at DESC LIMIT ?", (limit,))]
+        finally:
+            conn.close()
+        return [self.pipeline_view(p) for p in (self.get_pipeline(i) for i in ids) if p]
+
+    def effective_task(self, task: dict[str, Any]) -> dict[str, Any]:
+        """The task as the lead should see it. The first task of a pipeline stands for the whole pipeline: it is
+        'running' until the review loop ends, then 'done' (approved), 'needs_lead' or 'failed'."""
+        pid = task.get("pipeline_id")
+        if not pid or pid != task["id"]:
+            return task
+        pipe = self.get_pipeline(pid)
+        if pipe is None:
+            return task
+        view = self.pipeline_view(pipe)
+        status = {"active": "running", "approved": "done"}.get(pipe["status"], pipe["status"])
+        report = dict(pipe["summary"] or {})
+        report["pipeline"] = {k: v for k, v in view.items() if k != "summary"}
+        out = {**task, "status": status, "report": report, "pipeline": view}
+        if report.get("branch"):
+            out["branch"] = report["branch"]
+        return out
+
+    def task_view(self, task_id: str) -> dict[str, Any] | None:
+        task = self.get_task(task_id)
+        return self.effective_task(task) if task else None
+
+    # ---- models: guidance and measured history --------------------------------------------------------------------
+
+    def model_stats(self) -> dict[str, dict[str, Any]]:
+        """Per model: finished tasks, share that succeeded, and the typical run time. Measured, not guessed."""
+        buckets: dict[str, dict[str, Any]] = {}
+        for t in self.list_tasks(500):
+            if t["status"] not in ("done", "failed") or not t["started_at"]:
+                continue
+            report = t["report"] or {}
+            model = report.get("model") or t["model"]
+            if not model:
+                continue
+            b = buckets.setdefault(model, {"tasks": 0, "done": 0, "seconds": []})
+            b["tasks"] += 1
+            b["done"] += t["status"] == "done"
+            b["seconds"].append(max(0.0, t["updated_at"] - t["started_at"]))
+        out = {}
+        for model, b in buckets.items():
+            secs = sorted(b["seconds"])
+            out[model] = {"tasks": b["tasks"], "done_share": round(b["done"] / b["tasks"], 2),
+                          "median_seconds": round(secs[len(secs) // 2])}
+        return out
+
+    def model_guide(self) -> list[dict[str, Any]]:
+        stats = self.model_stats()
+        return [{"id": mid, "name": name, **model_hint(mid), "stats": stats.get(mid)}
+                for mid, name in self.model_catalog().items()]
+
     # ---- state transitions ---------------------------------------------
 
     def _finish(self, task_id: str, status: str, report: dict[str, Any]) -> None:
@@ -745,6 +1158,11 @@ class Pool:
             " WHERE id = ?",
             (status, json.dumps(report, ensure_ascii=False), report.get("account"), time.time(), task_id),
         )
+        if status in ("done", "failed"):
+            try:
+                self._after_terminal(task_id)
+            except Exception:  # a pipeline problem must never lose the task's own result
+                log.exception("pipeline step after task %s failed", task_id)
 
     def _retry_or_fail(
         self, task: dict[str, Any], account_id: str, reason: str, output: str, delay: float = NETWORK_RETRY_S

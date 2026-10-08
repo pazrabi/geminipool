@@ -37,6 +37,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .s-wait, .s-queued { color: var(--wait); background: var(--wait-bg); }
 .s-bad, .s-failed { color: var(--bad); background: var(--bad-bg); }
 .s-idle { color: var(--idle); background: var(--idle-bg); }
+.s-needs, .s-needs_lead { color: var(--wait); background: var(--wait-bg); }
+.pipe-steps { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding: 0 14px 12px; }
+.chip { border-radius: 10px; padding: 5px 9px; font-size: 12.5px; line-height: 1.3; }
+.chip b { display: block; font-size: 13px; }
+.chip span { opacity: .85; }
+.arrow { color: var(--muted); }
 .banner { margin-top: 14px; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--wait); color: var(--wait); background: var(--wait-bg); font-weight: 600; }
 .banner.safe { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
 .banner.bad { border-color: var(--bad); color: var(--bad); background: var(--bad-bg); }
@@ -111,6 +117,8 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
   <div class="counters" id="counters"></div>
   <h2>Агенты</h2>
   <div class="grid" id="accounts"></div>
+  <h2>Конвейеры</h2>
+  <div id="pipelines"></div>
   <h2>Задачи</h2>
   <div class="filters" id="filters"></div>
   <div id="tasks"></div>
@@ -218,7 +226,21 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
   }
 
   // ---- rendering ---------------------------------------------------------
-  var STATUS = { queued: "В очереди", running: "Выполняется", done: "Готово", failed: "Ошибка" };
+  var STATUS = { queued: "В очереди", running: "Выполняется", done: "Готово", failed: "Ошибка", needs_lead: "Нужен тимлид" };
+  var PIPE_STAGE = { develop: "Разработка", awaiting_review: "Ждёт ревью", review: "Идёт ревью", rework: "Доработка",
+    approved: "Одобрено", needs_lead: "Нужен тимлид", failed: "Ошибка" };
+  var PIPE_CLASS = { develop: "s-running", awaiting_review: "s-queued", review: "s-running", rework: "s-running",
+    approved: "s-done", needs_lead: "s-needs", failed: "s-failed" };
+  var REASON = { max_rounds: "ревьюер не одобрил за отведённые раунды", review_no_verdict: "ревьюер не дал вердикт",
+    review_failed: "ревью не удалось выполнить", no_changes: "разработчик ничего не изменил", violation: "нарушены правила (лишние файлы)",
+    internal: "внутренняя ошибка пула", quota: "лимит исчерпан", auth: "проблема со входом агента", network: "сеть",
+    timeout: "таймаут", agent_error: "ошибка агента" };
+  function shortModel(m) { return m ? String(m).replace(/^gemini-/, "") : ""; }
+  function stageLabel(t) {
+    if (!t.stage) return "";
+    if (t.pipeline_id === t.id) return "конвейер";
+    return t.stage === "review" ? "ревью" : t.stage === "rework" ? "доработка " + t.round : "";
+  }
   var KIND = {
     "quota limit": "Лимит", "account auth error": "Нет входа", "network error": "Сеть", "timeout": "Таймаут",
     "agent_error": "Ошибка агента", "violation": "Нарушение правил", "push_error": "Ошибка пуша",
@@ -420,6 +442,10 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
     else if (t.started_at) kv(grid, "Время работы", span(t.updated_at - t.started_at));
     if (t.created_at) kv(grid, "Поставлена", dateTime(t.created_at));
     if ("model" in r) kv(grid, "Модель", r.model || "по умолчанию (выбирает agy)");
+    if (r.rounds) kv(grid, "Раундов ревью", r.rounds + (r.max_rounds ? " из " + r.max_rounds : ""));
+    if (r.verdict) kv(grid, "Вердикт ревьюера", r.verdict === "APPROVE" ? "одобрено" : "есть замечания");
+    if (r.reviewer_model) kv(grid, "Модель ревьюера", r.reviewer_model + (r.reviewer_account ? " (" + r.reviewer_account + ")" : ""));
+    if (t.status === "needs_lead" && r.reason) kv(grid, "Нужен тимлид", REASON[r.reason] || r.reason);
     else if (t.model) kv(grid, "Модель (задана)", t.model);
     if (d) kv(grid, "Разрешённые файлы", (d.allowed_files || []).join(", "));
     if (d && d.test_cmd) kv(grid, "Команда тестов", d.test_cmd);
@@ -433,6 +459,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
     body.appendChild(grid);
     if (d) body.appendChild(el("div", "row muted", "Задача: ")), body.lastChild.appendChild(pre(d.goal));
     if (r.summary) { body.appendChild(el("div", "row muted", "Ответ агента:")); body.appendChild(pre(r.summary)); }
+    if (r.review_summary) { body.appendChild(el("div", "row muted", "Итог ревьюера:")); body.appendChild(pre(r.review_summary)); }
     if (r.tests && r.tests.tail) { body.appendChild(el("div", "row muted", "Вывод тестов:")); body.appendChild(pre(r.tests.tail)); }
     if (r.tail) { body.appendChild(el("div", "row muted", "Вывод агента при ошибке:")); body.appendChild(pre(r.tail)); }
     if (t.status === "failed" && /^internal/.test(r.error || "")) {
@@ -455,11 +482,16 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
       var b = el("button", filter === f[0] ? "on" : "", f[1]); b.onclick = function () { filter = f[0]; renderTasks(); }; filters.appendChild(b);
     });
     var box = document.getElementById("tasks"); box.textContent = "";
-    var list = data.tasks.filter(function (t) { return filter === "all" || t.status === filter; });
+    var list = data.tasks.filter(function (t) {
+      return filter === "all" || t.status === filter || (filter === "failed" && t.status === "needs_lead");
+    });
     if (!list.length) { box.appendChild(el("div", "empty", "Задач нет")); return; }
     list.forEach(function (t) {
       var card = el("div", "task"), head = el("div", "head");
-      head.appendChild(pill("s-" + t.status, STATUS[t.status] || t.status));
+      var statusBox = el("span", "");
+      statusBox.appendChild(pill("s-" + t.status, STATUS[t.status] || t.status));
+      if (stageLabel(t)) { statusBox.appendChild(document.createTextNode(" ")); statusBox.appendChild(pill("s-idle", stageLabel(t))); }
+      head.appendChild(statusBox);
       head.appendChild(el("span", "mono", t.id));
       head.appendChild(el("span", "goal", t.goal));
       var meta = el("span", "meta");
@@ -475,8 +507,70 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
         renderTasks();
       };
       card.appendChild(head);
-      if (t.note && !openTasks[t.id]) { var n = el("div", "muted", t.note); n.style.padding = "0 14px 10px"; card.appendChild(n); }
+      if (t.note && !openTasks[t.id]) { var n = el("div", "muted", REASON[t.note] || t.note); n.style.padding = "0 14px 10px"; card.appendChild(n); }
       if (openTasks[t.id]) card.appendChild(renderDetail(t, taskDetail[t.id]));
+      box.appendChild(card);
+    });
+  }
+
+  function stepChip(step) {
+    var label = step.stage === "review" ? "Ревью" : step.stage === "rework" ? "Доработка " + step.round : "Разработка";
+    var cls = "s-" + step.status, detail;
+    var chip = el("div", "chip");
+    var who = (step.account_id || (step.stage === "review" ? "ревьюер" : "разработчик")) + (step.model ? " · " + shortModel(step.model) : "");
+    if (step.status === "queued") {
+      detail = liveSpan(step.created_at, step.stage === "review" ? "ждёт ревьюера " : "ждёт агента ");
+    } else if (step.status === "running") {
+      detail = liveSpan(step.started_at || step.updated_at, "идёт ");
+    } else if (step.status === "done") {
+      var took = step.started_at ? "заняло " + span(step.updated_at - step.started_at) : "готово";
+      if (step.stage === "review" && step.verdict) {
+        cls = step.verdict === "APPROVE" ? "s-done" : "s-needs";
+        took = (step.verdict === "APPROVE" ? "одобрено" : "есть замечания") + " · " + took;
+      }
+      detail = document.createTextNode(took);
+    } else {
+      detail = document.createTextNode("ошибка");
+    }
+    chip.className = "chip " + cls;
+    chip.appendChild(el("b", "", label));
+    chip.appendChild(el("span", "", who)); chip.appendChild(document.createElement("br"));
+    var line = el("span", ""); line.appendChild(detail); chip.appendChild(line);
+    return chip;
+  }
+
+  function renderPipelines() {
+    var box = document.getElementById("pipelines"); box.textContent = "";
+    var list = data.pipelines || [];
+    if (!list.length) { box.appendChild(el("div", "empty", "Конвейеров пока нет. Задача с review=true проходит разработку, ревью и доработку сама.")); return; }
+    list.forEach(function (p) {
+      var card = el("div", "task"), head = el("div", "head");
+      var queuedDev = p.waiting && (p.stage === "develop" || p.stage === "rework");
+      head.appendChild(pill(queuedDev ? "s-queued" : (PIPE_CLASS[p.stage] || "s-idle"),
+                            queuedDev ? PIPE_STAGE[p.stage] + ": ждёт агента" : (PIPE_STAGE[p.stage] || p.stage)));
+      head.appendChild(el("span", "mono", p.id));
+      head.appendChild(el("span", "goal", p.goal.split("\n")[0]));
+      head.appendChild(el("span", "meta", "раунд " + p.round + " из " + p.max_rounds));
+      head.onclick = function () {
+        openTasks[p.id] = !openTasks[p.id];
+        if (openTasks[p.id]) loadDetail(p.id);
+        renderPipelines();
+      };
+      card.appendChild(head);
+      var steps = el("div", "pipe-steps");
+      p.steps.forEach(function (st, i) {
+        if (i) steps.appendChild(el("span", "arrow", "→"));
+        steps.appendChild(stepChip(st));
+      });
+      var endText = p.status === "approved" ? ["s-done", "Одобрено, можно коммитить"]
+        : p.status === "needs_lead" ? ["s-needs", "Нужен тимлид: " + (REASON[p.reason] || p.reason || "")]
+        : p.status === "failed" ? ["s-failed", "Ошибка: " + (REASON[p.reason] || p.reason || "")] : null;
+      if (endText) { steps.appendChild(el("span", "arrow", "→")); steps.appendChild(pill(endText[0], endText[1])); }
+      card.appendChild(steps);
+      if (openTasks[p.id]) {
+        var root = data.tasks.filter(function (t) { return t.id === p.id; })[0] || { id: p.id, repo: "", attempts: 1, status: p.status };
+        card.appendChild(renderDetail(root, taskDetail[p.id]));
+      }
       box.appendChild(card);
     });
   }
@@ -537,12 +631,12 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
     renderMaintenance();
     var c = document.getElementById("conn"); c.className = "pill s-ok"; c.textContent = "онлайн";
     document.getElementById("updated").textContent = "обновлено " + clock(data.now);
-    renderCounters(); renderAccounts(); renderTasks(); renderEvents();
+    renderCounters(); renderAccounts(); renderPipelines(); renderTasks(); renderEvents();
   }
 
   // ---- actions -----------------------------------------------------------
   function loadDetail(id) {
-    api("/api/tasks/" + id).then(function (d) { taskDetail[id] = d; if (data) renderTasks(); }).catch(function () {});
+    api("/api/tasks/" + id).then(function (d) { taskDetail[id] = d; if (data) { renderTasks(); renderPipelines(); } }).catch(function () {});
   }
 
   function checkQuota(id) {
@@ -562,7 +656,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
       clockOffset = d.now - Date.now() / 1000;
       // Rebuild the page only when something changed (or every 15 s for the countdowns), and never
       // while the user has text selected, so clicks and selections are not destroyed by a refresh.
-      var sig = JSON.stringify([d.accounts, d.tasks, d.events, d.draining, d.running, d.disk && d.disk.low, Math.floor(d.now / 15)]);
+      var sig = JSON.stringify([d.accounts, d.tasks, d.events, d.draining, d.running, d.disk && d.disk.low, d.pipelines, Math.floor(d.now / 15)]);
       var selecting = String(window.getSelection ? window.getSelection() : "").length > 0 ||
         (document.activeElement && ["SELECT", "INPUT"].indexOf(document.activeElement.tagName) >= 0);
       var first = !data;

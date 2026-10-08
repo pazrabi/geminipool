@@ -29,7 +29,7 @@ class FakeAgent:
         self.calls = []
 
     async def __call__(self, *, prompt, workdir, env, timeout, model=None):
-        self.calls.append({"workdir": Path(workdir), "env": env, "model": model})
+        self.calls.append({"workdir": Path(workdir), "env": env, "model": model, "prompt": prompt})
         action = self.script.pop(0) if self.script else (lambda wd: RunResult(0, json.dumps({"response": "ok"}), ""))
         return action(Path(workdir))
 

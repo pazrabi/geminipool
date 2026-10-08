@@ -25,6 +25,21 @@ each task becomes a git branch `pool/<id>` plus a short report. Agents never mer
 `[{"id": "acc1", "role": "developer", "model": "gemini-3.8-flash-high"}]`. Roles: `developer`, `reviewer`, `debugger`.
 Log an agent in once on the server: see `deploy/SETUP.md` (Google OAuth, kept alive in tmux).
 
+## Pipelines: develop, review, rework, approved
+
+`submit_task` with `review=true` makes a pipeline. The developer's task is followed automatically by a review task for an
+agent with role `reviewer` (it starts from the developer's commit, must not change files, runs the tests, and ends its answer
+with `VERDICT: APPROVE` or `VERDICT: CHANGES`). On CHANGES (or failing tests, whatever the reviewer says) a rework task goes back to
+a developer, starting from the same commit with the findings in its goal, up to `max_rounds` (default 3). On APPROVE the pipeline is
+approved and the lead gets one report (`task_result` of the first task): final branch, cumulative changed files, both summaries,
+tests. Otherwise the pipeline ends as `needs_lead` (reason `max_rounds`, `review_no_verdict`, `review_failed`, `no_changes`) or `failed`.
+
+The first task's id stands for the whole pipeline: `task_status` shows `running` (with `stage`: develop, awaiting_review, review,
+rework) until the end, then `done`, `needs_lead` or `failed`. A review waits in the queue while the only reviewer is busy
+(`awaiting_review` on the dashboard). `list_models` returns hints read off the model ids plus the pool's measured history per
+model. `submit_task` warns when new work may touch the same files as work in flight. Roles needed: at least one `developer`
+and one `reviewer` agent, and `POOL_MAX_CONCURRENT` high enough for both (e.g. 3 with two developers and a reviewer).
+
 ## Adding agents (Google accounts)
 
 On your Mac: `scripts/add_account.sh acc2 [developer|reviewer|debugger]`. It registers the agent in the pool, starts agy's

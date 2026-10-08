@@ -20,10 +20,13 @@ from pathlib import Path
 
 DEFAULT_URL = "https://193-41-86-92.sslip.io"
 DEFAULT_TOKEN_FILE = "~/projects/.gemini-pool-mcp-token"
-FINISHED = ("done", "failed")
+FINISHED = ("done", "failed", "needs_lead")
 TASK_ID = re.compile(r"[0-9a-f]{12}")
 FAILURE_REASONS = (("internal", "internal"), ("quota", "quota"), ("account auth", "auth"),
                    ("network", "network"), ("timeout", "timeout"), ("agent exited", "agent_error"))
+# Reasons the pool itself gives for a pipeline that needs the lead (fixed words, never free text).
+PIPELINE_REASONS = {"max_rounds", "review_no_verdict", "review_failed", "no_changes", "violation", "internal", "quota",
+                    "auth", "network", "timeout", "agent_error"}
 
 
 def safe(value, limit=120):
@@ -33,6 +36,8 @@ def safe(value, limit=120):
 
 def failure_reason(report):
     report = report or {}
+    if report.get("reason") in PIPELINE_REASONS:
+        return report["reason"]
     if report.get("violations"):
         return "violation"
     error = str(report.get("error") or "")
@@ -54,9 +59,17 @@ def describe(task):
                   "files=" + str(len(report.get("changed_files") or []))]
     else:
         parts.append("reason=" + failure_reason(report))
-    started = task.get("started_at")
-    if started and task.get("updated_at"):
-        parts.append("duration=%ds" % round(task["updated_at"] - started))
+    pipeline = task.get("pipeline")
+    if pipeline:  # the first task stands for the whole develop-review-rework pipeline
+        parts.append("rounds=%d" % int(report.get("rounds") or pipeline.get("round") or 1))
+        if task["status"] == "done":
+            parts.append("verdict=approved")
+        if pipeline.get("created_at") and pipeline.get("updated_at"):
+            parts.append("duration=%ds" % round(pipeline["updated_at"] - pipeline["created_at"]))
+    else:
+        started = task.get("started_at")
+        if started and task.get("updated_at"):
+            parts.append("duration=%ds" % round(task["updated_at"] - started))
     parts.append("model=" + safe(report.get("model") or task.get("model") or "default"))
     return " ".join(parts)
 
