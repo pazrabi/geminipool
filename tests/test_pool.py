@@ -179,6 +179,54 @@ class PoolTests(unittest.TestCase):
         proc = subprocess.run(["git", "push", "origin", "HEAD:refs/heads/evil"], cwd=wt, capture_output=True, text=True)
         self.assertNotEqual(proc.returncode, 0)
 
+    def test_errors_are_logged_as_events(self):
+        self.agent.script = [failing("Error: 429 RESOURCE_EXHAUSTED quota exceeded"), write_file("src/x.py")]
+        tid = self.submit()
+        self.run_pool()
+        events = self.pool.list_events()
+        self.assertEqual([e["kind"] for e in events], ["quota limit"])
+        self.assertEqual(events[0]["account_id"], "acc1")
+        self.assertEqual(events[0]["task_id"], tid)
+        self.assertIn("RESOURCE_EXHAUSTED", events[0]["message"])
+
+    def test_violation_is_logged(self):
+        self.agent.script = [write_file("secrets.env")]
+        self.submit()
+        self.run_pool()
+        self.assertEqual([e["kind"] for e in self.pool.list_events()], ["violation"])
+
+    def test_check_quota_stores_result_per_account(self):
+        calls = []
+        self.pool.quota_checker = lambda env: (calls.append(env["HOME"]) or True, "Usage: 40% of daily limit")
+        res = self.pool.check_quota("acc1")
+        self.assertTrue(res["ok"])
+        self.assertTrue(calls[0].endswith("profiles/acc1"))
+        acc = {a["id"]: a for a in self.pool.list_accounts()}
+        self.assertEqual(acc["acc1"]["quota_text"], "Usage: 40% of daily limit")
+        self.assertIsNone(acc["acc2"]["quota_text"])
+
+    def test_failed_quota_check_is_logged(self):
+        self.pool.quota_checker = lambda env: (False, "not logged in")
+        self.assertFalse(self.pool.check_quota("acc1")["ok"])
+        self.assertEqual(self.pool.list_events()[0]["kind"], "quota_check_failed")
+
+    def test_check_quota_rejects_unknown_account(self):
+        self.pool.quota_checker = lambda env: (True, "")
+        with self.assertRaises(ValueError):
+            self.pool.check_quota("nope")
+
+    def test_dashboard_overview_shape(self):
+        import server
+        self.agent.script = [write_file("src/x.py")]
+        self.submit()
+        self.run_pool()
+        data = server.overview(self.pool)
+        self.assertEqual(data["counts"]["done"], 1)
+        self.assertEqual({a["id"] for a in data["accounts"]}, {"acc1", "acc2", "rev1"})
+        task = data["tasks"][0]
+        self.assertNotIn("report", task)  # the list stays light; the full report is fetched per task
+        self.assertIn("goal", task)
+
     def test_restart_requeues_running_tasks(self):
         tid = self.submit()
         self.pool._claim_next()  # simulate a crash mid-run

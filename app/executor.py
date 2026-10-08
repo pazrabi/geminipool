@@ -13,6 +13,24 @@ from pool import RunResult
 AGY_BIN = os.environ.get("AGY_BIN", "agy")
 
 
+def agy_quota(env: dict[str, str]) -> tuple[bool, str]:
+    """Run agy's /usage in print mode for one account. Blocking; returns (ok, output)."""
+    try:
+        proc = subprocess.run(
+            [AGY_BIN, "-p", "/usage"],
+            cwd=env["HOME"],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "agy did not answer within 90 seconds"
+    text = f"{proc.stdout}\n{proc.stderr}".strip()
+    return proc.returncode == 0, text[-4000:]
+
+
 async def agy_runner(
     *,
     prompt: str,

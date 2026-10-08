@@ -1,12 +1,14 @@
-"""HTTP front for gemini-pool: MCP over JSON-RPC at POST /mcp and a read-only status page."""
+"""HTTP front for gemini-pool: MCP over JSON-RPC (POST /mcp), dashboard API and the dashboard page."""
 
 from __future__ import annotations
 
 import hmac
-import html
 import json
 import logging
+import re
+import time
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 from typing import Any
 
 from pool import ROLES, Pool
@@ -14,6 +16,7 @@ from pool import ROLES, Pool
 log = logging.getLogger("server")
 
 PROTOCOL_VERSION = "2025-03-26"
+DASHBOARD = Path(__file__).with_name("dashboard.html")
 _pool: Pool | None = None
 _token: str = ""
 
@@ -104,7 +107,7 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
             result: Any = {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "gemini-pool", "version": "0.1.0"},
+                "serverInfo": {"name": "gemini-pool", "version": "0.2.0"},
             }
         elif method == "ping":
             result = {}
@@ -124,23 +127,34 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
     return {"jsonrpc": "2.0", "id": rid, "result": result}
 
 
-def render_status(pool: Pool) -> str:
-    acc_rows = "".join(
-        f"<tr><td>{html.escape(a['id'])}</td><td>{html.escape(a['role'])}</td><td>{html.escape(a['state'])}</td>"
-        f"<td>{'enabled' if a['enabled'] else 'disabled'}</td><td>{html.escape(a['busy_task'] or '-')}</td></tr>"
-        for a in pool.list_accounts()
-    )
-    task_rows = "".join(
-        f"<tr><td>{html.escape(t['id'])}</td><td>{html.escape(t['role'])}</td><td>{html.escape(t['status'])}</td>"
-        f"<td>{t['attempts']}</td><td>{html.escape(t['account_id'] or '-')}</td></tr>"
-        for t in pool.list_tasks(20)
-    )
-    return f"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>gemini-pool</title>
-<style>body{{font:14px system-ui;margin:16px}}table{{border-collapse:collapse;margin-bottom:24px}}
-td,th{{border:1px solid #ccc;padding:4px 8px;text-align:left}}</style>
-<h2>Accounts</h2><table><tr><th>id</th><th>role</th><th>state</th><th>enabled</th><th>busy task</th></tr>{acc_rows}</table>
-<h2>Recent tasks</h2><table><tr><th>id</th><th>role</th><th>status</th><th>attempts</th><th>account</th></tr>{task_rows}</table>"""
+# ---- dashboard API --------------------------------------------------------
+
+
+def _task_summary(t: dict[str, Any]) -> dict[str, Any]:
+    report = t["report"] or {}
+    tests = report.get("tests") or {}
+    note = report.get("error") or report.get("last_error") or "; ".join(report.get("violations") or []) or None
+    return {
+        "id": t["id"], "role": t["role"], "status": t["status"], "goal": t["goal"], "repo": t["repo"],
+        "account_id": t["account_id"], "attempts": t["attempts"], "branch": t["branch"],
+        "created_at": t["created_at"], "updated_at": t["updated_at"],
+        "pushed": report.get("pushed"), "tests_passed": tests.get("passed") if tests else None,
+        "note": note,
+    }
+
+
+def overview(pool: Pool) -> dict[str, Any]:
+    tasks = pool.list_tasks(60)
+    counts = {s: 0 for s in ("queued", "running", "done", "failed")}
+    for t in tasks:
+        counts[t["status"]] = counts.get(t["status"], 0) + 1
+    return {
+        "now": time.time(),
+        "accounts": pool.list_accounts(),
+        "tasks": [_task_summary(t) for t in tasks],
+        "events": pool.list_events(50),
+        "counts": counts,
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -153,26 +167,52 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         if body:
             self.wfile.write(body)
 
     def _json(self, code: int, obj: Any) -> None:
-        self._send(code, json.dumps(obj, ensure_ascii=False).encode())
+        self._send(code, json.dumps(obj, ensure_ascii=False, default=str).encode())
+
+    def _authorized(self) -> bool:
+        auth = self.headers.get("Authorization", "")
+        return bool(_token) and hmac.compare_digest(auth.encode(), f"Bearer {_token}".encode())
 
     def do_GET(self) -> None:
-        if self.path == "/health":
+        path = self.path.split("?", 1)[0]
+        if path == "/health":
             return self._send(200, b"ok", "text/plain")
-        if self.path in ("/", "/status") and _pool is not None:
-            return self._send(200, render_status(_pool).encode(), "text/html; charset=utf-8")
+        if path in ("/", "/index.html"):
+            # The page itself holds no data; every API call below needs the token.
+            return self._send(200, DASHBOARD.read_bytes(), "text/html; charset=utf-8")
+        if path.startswith("/api/"):
+            if not self._authorized():
+                return self._json(401, {"error": "unauthorized"})
+            assert _pool is not None
+            if path == "/api/overview":
+                return self._json(200, overview(_pool))
+            match = re.fullmatch(r"/api/tasks/([0-9a-f]{12})", path)
+            if match:
+                task = _pool.get_task(match.group(1))
+                return self._json(200, task) if task else self._json(404, {"error": "unknown task"})
         self._send(404, b"not found", "text/plain")
 
     def do_POST(self) -> None:
-        if self.path != "/mcp":
+        path = self.path.split("?", 1)[0]
+        match = re.fullmatch(r"/api/accounts/([A-Za-z0-9_-]{1,32})/quota", path)
+        if match:
+            if not self._authorized():
+                return self._json(401, {"error": "unauthorized"})
+            assert _pool is not None
+            try:
+                return self._json(200, _pool.check_quota(match.group(1)))
+            except ValueError as exc:
+                return self._json(404, {"error": str(exc)})
+        if path != "/mcp":
             return self._send(404, b"not found", "text/plain")
-        auth = self.headers.get("Authorization", "")
-        expected = f"Bearer {_token}"
-        if not _token or not hmac.compare_digest(auth.encode(), expected.encode()):
+        if not self._authorized():
             return self._json(401, {"error": "unauthorized"})
         length = int(self.headers.get("Content-Length") or 0)
         if length > 1_000_000:

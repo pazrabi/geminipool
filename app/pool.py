@@ -75,6 +75,20 @@ CREATE TABLE IF NOT EXISTS accounts (
     busy_task TEXT,
     last_used REAL NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    kind TEXT NOT NULL,
+    account_id TEXT,
+    task_id TEXT,
+    message TEXT
+);
+CREATE TABLE IF NOT EXISTS quota (
+    account_id TEXT PRIMARY KEY,
+    checked_at REAL NOT NULL,
+    ok INTEGER NOT NULL,
+    output TEXT
+);
 """
 
 
@@ -118,8 +132,10 @@ class Pool:
         accounts: list[dict[str, Any]],
         push_token: str | None = None,
         allow_local_repos: bool = False,
+        quota_checker: Callable[[dict[str, str]], tuple[bool, str]] | None = None,
     ):
         self.allow_local_repos = allow_local_repos
+        self.quota_checker = quota_checker
         self.data = Path(data_dir)
         self.repos = self.data / "repos"
         self.worktrees = self.data / "worktrees"
@@ -187,9 +203,47 @@ class Pool:
 
     def list_accounts(self) -> list[dict[str, Any]]:
         conn = self._db()
-        rows = conn.execute("SELECT * FROM accounts ORDER BY id").fetchall()
+        rows = conn.execute(
+            "SELECT a.*, q.checked_at AS quota_checked_at, q.ok AS quota_ok, q.output AS quota_text"
+            " FROM accounts a LEFT JOIN quota q ON q.account_id = a.id ORDER BY a.id"
+        ).fetchall()
         conn.close()
         return [dict(r) for r in rows]
+
+    def list_events(self, limit: int = 50) -> list[dict[str, Any]]:
+        conn = self._db()
+        rows = conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def _event(self, kind: str, account_id: str | None, task_id: str | None, message: str) -> None:
+        conn = self._db()
+        try:
+            conn.execute(
+                "INSERT INTO events (ts, kind, account_id, task_id, message) VALUES (?, ?, ?, ?, ?)",
+                (time.time(), kind, account_id, task_id, (message or "").strip()[-1500:]),
+            )
+            conn.execute("DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - 1000")
+        finally:
+            conn.close()
+
+    def check_quota(self, account_id: str) -> dict[str, Any]:
+        """Ask agy for the account's usage (/usage). Blocking: call from a worker thread."""
+        if account_id not in self.accounts_cfg:
+            raise ValueError("unknown account")
+        if self.quota_checker is None:
+            raise ValueError("quota check is not available")
+        ok, text = self.quota_checker(self._agent_env(account_id))
+        checked_at = time.time()
+        self._exec(
+            "INSERT INTO quota (account_id, checked_at, ok, output) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(account_id) DO UPDATE SET checked_at = excluded.checked_at,"
+            " ok = excluded.ok, output = excluded.output",
+            (account_id, checked_at, int(ok), text),
+        )
+        if not ok:
+            self._event("quota_check_failed", account_id, None, text)
+        return {"account_id": account_id, "checked_at": checked_at, "ok": ok, "text": text}
 
     @staticmethod
     def _task_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -313,6 +367,7 @@ class Pool:
             await self._run(task_id, account_id)
         except Exception as exc:
             log.exception("task %s crashed", task_id)
+            self._event("internal", account_id, task_id, str(exc))
             self._finish(task_id, "failed", {"error": f"internal: {exc}"})
         finally:
             self._exec("UPDATE accounts SET busy_task = NULL, last_used = ? WHERE id = ?", (time.time(), account_id))
@@ -348,6 +403,7 @@ class Pool:
                 return self._retry_or_fail(task, account_id, "account auth error", output, delay=0)
             if NETWORK_RE.search(output):
                 return self._retry_or_fail(task, account_id, "network error", output)
+            self._event("agent_error", account_id, task_id, f"exit code {res.returncode}\n{output}")
             return self._finish(task_id, "failed", {
                 "error": f"agent exited with code {res.returncode}",
                 "tail": output[-2000:],
@@ -385,6 +441,9 @@ class Pool:
                     pushed = True
                 except git_ops.GitError as exc:
                     push_error = str(exc)
+                    self._event("push_error", account_id, task_id, push_error)
+        for violation in violations:
+            self._event("violation", account_id, task_id, violation)
 
         report = {
             "summary": summary,
@@ -429,6 +488,7 @@ class Pool:
     def _retry_or_fail(
         self, task: dict[str, Any], account_id: str, reason: str, output: str, delay: float = NETWORK_RETRY_S
     ) -> None:
+        self._event(reason, account_id, task["id"], output)
         if task["attempts"] >= MAX_ATTEMPTS:
             return self._finish(task["id"], "failed", {"error": reason, "tail": output[-2000:], "account": account_id})
         self._exec(
