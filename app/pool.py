@@ -231,6 +231,10 @@ class Pool:
         if self.models_lister is None:
             raise ValueError("model list is not available")
         ok, text = self.models_lister(self._agent_env(account_id))
+        if ok:
+            text = "\n".join(
+                line for line in text.splitlines() if line.split("\t")[0].strip().startswith("gemini")
+            )
         return {"account_id": account_id, "ok": ok, "text": text}
 
     def model_catalog(self) -> dict[str, str]:
@@ -245,7 +249,8 @@ class Pool:
         if ok:
             for line in text.splitlines():
                 parts = line.split("\t")
-                if len(parts) == 2 and parts[0].strip():
+                # Only Gemini models are offered; agy also lists Claude and GPT models, which the pool ignores.
+                if len(parts) == 2 and parts[0].strip().startswith("gemini"):
                     catalog[parts[0].strip()] = parts[1].strip()
         if catalog:
             self._models_cache = (time.time(), catalog)
@@ -262,9 +267,7 @@ class Pool:
         if account_id not in self.accounts_cfg:
             raise ValueError("unknown account")
         if model:
-            listing = self.list_models(account_id)
-            known = {line.split("\t")[0].strip() for line in listing["text"].splitlines() if "\t" in line}
-            if not listing["ok"] or model not in known:
+            if model not in self.model_catalog():
                 raise ValueError("unknown model")
             self.accounts_cfg[account_id]["model"] = model
         else:

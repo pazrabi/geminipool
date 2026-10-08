@@ -228,7 +228,7 @@ class PoolTests(unittest.TestCase):
         self.assertIn("goal", task)
 
     def test_account_model_is_passed_to_the_agent_and_reported(self):
-        accounts = [{"id": "acc1", "role": "developer", "model": "claude-x"}]
+        accounts = [{"id": "acc1", "role": "developer", "model": "gemini-x"}]
         pool = Pool(self.tmp / "data2", runner=self.agent, accounts=accounts, allow_local_repos=True)
         self.agent.script = [write_file("src/x.py")]
         tid = pool.submit("developer", "g", self.url, ["src/*.py"])
@@ -237,38 +237,48 @@ class PoolTests(unittest.TestCase):
             await pool.dispatch_once()
             await asyncio.gather(*list(pool.running))
         asyncio.run(go())
-        self.assertEqual(self.agent.calls[-1]["model"], "claude-x")
-        self.assertEqual(pool.get_task(tid)["report"]["model"], "claude-x")
-        self.assertEqual(pool.list_accounts()[0]["model"], "claude-x")
+        self.assertEqual(self.agent.calls[-1]["model"], "gemini-x")
+        self.assertEqual(pool.get_task(tid)["report"]["model"], "gemini-x")
+        self.assertEqual(pool.list_accounts()[0]["model"], "gemini-x")
 
     def test_account_without_model_uses_agy_default(self):
         self.assertIsNone({a["id"]: a for a in self.pool.list_accounts()}["acc1"]["model"])
 
     def test_list_models(self):
-        self.pool.models_lister = lambda env: (True, "gemini-x\nclaude-y")
-        self.assertEqual(self.pool.list_models("acc1")["text"], "gemini-x\nclaude-y")
+        self.pool.models_lister = lambda env: (True, "gemini-x\tGemini X\ngemini-z\tGemini Z")
+        self.assertEqual(self.pool.list_models("acc1")["text"], "gemini-x\tGemini X\ngemini-z\tGemini Z")
         with self.assertRaises(ValueError):
             self.pool.list_models("nope")
 
     def test_task_model_overrides_account_model(self):
         accounts = [{"id": "acc1", "role": "developer", "model": "gemini-a"}]
         pool = Pool(self.tmp / "data3", runner=self.agent, accounts=accounts, allow_local_repos=True,
-                    models_lister=lambda env: (True, "gemini-a\tGemini A\nclaude-b\tClaude B"))
+                    models_lister=lambda env: (True, "gemini-a\tGemini A\ngemini-b\tGemini B"))
         self.agent.script = [write_file("src/x.py")]
-        tid = pool.submit("developer", "g", self.url, ["src/*.py"], model="claude-b")
+        tid = pool.submit("developer", "g", self.url, ["src/*.py"], model="gemini-b")
 
         async def go():
             await pool.dispatch_once()
             await asyncio.gather(*list(pool.running))
         asyncio.run(go())
-        self.assertEqual(self.agent.calls[-1]["model"], "claude-b")
-        self.assertEqual(pool.get_task(tid)["report"]["model"], "claude-b")
+        self.assertEqual(self.agent.calls[-1]["model"], "gemini-b")
+        self.assertEqual(pool.get_task(tid)["report"]["model"], "gemini-b")
+
+    def test_non_gemini_models_are_hidden_and_rejected(self):
+        self.pool.models_lister = lambda env: (
+            True, "gemini-a\tGemini A\nclaude-sonnet-4-6\tClaude Sonnet 4.6\ngpt-oss-120b-medium\tGPT-OSS 120B")
+        self.assertEqual(list(self.pool.model_catalog()), ["gemini-a"])
+        self.assertEqual(self.pool.list_models("acc1")["text"], "gemini-a\tGemini A")
+        with self.assertRaises(ValueError):
+            self.submit(model="claude-sonnet-4-6")
+        with self.assertRaises(ValueError):
+            self.pool.set_model("acc1", "gpt-oss-120b-medium")
 
     def test_unknown_task_model_is_rejected_with_the_available_list(self):
-        self.pool.models_lister = lambda env: (True, "gemini-a\tGemini A\nclaude-b\tClaude B")
+        self.pool.models_lister = lambda env: (True, "gemini-a\tGemini A\ngemini-b\tGemini B")
         with self.assertRaises(ValueError) as ctx:
             self.submit(model="gpt-9")
-        self.assertIn("claude-b", str(ctx.exception))
+        self.assertIn("gemini-b", str(ctx.exception))
 
     def test_model_check_is_skipped_when_the_list_is_unavailable(self):
         self.pool.models_lister = lambda env: (False, "agy failed")
@@ -291,11 +301,11 @@ class PoolTests(unittest.TestCase):
         self.assertIsNone(pool.get_task(tid)["model"])
 
     def test_set_model_validates_persists_and_resets(self):
-        self.pool.models_lister = lambda env: (True, "gemini-a\tGemini A\nclaude-b\tClaude B")
-        self.pool.set_model("acc1", "claude-b")
-        self.assertEqual({a["id"]: a for a in self.pool.list_accounts()}["acc1"]["model"], "claude-b")
+        self.pool.models_lister = lambda env: (True, "gemini-a\tGemini A\ngemini-b\tGemini B")
+        self.pool.set_model("acc1", "gemini-b")
+        self.assertEqual({a["id"]: a for a in self.pool.list_accounts()}["acc1"]["model"], "gemini-b")
         saved = json.loads((self.tmp / "data" / "accounts.json").read_text())
-        self.assertEqual({a["id"]: a.get("model") for a in saved}["acc1"], "claude-b")
+        self.assertEqual({a["id"]: a.get("model") for a in saved}["acc1"], "gemini-b")
         with self.assertRaises(ValueError):
             self.pool.set_model("acc1", "not-a-model")
         self.pool.set_model("acc1", None)

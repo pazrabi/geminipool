@@ -139,17 +139,17 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
   }
 
   // agy /usage prints tab-separated rows: <model group> <limit name> <percent> <ISO reset time>.
-  var GROUPS = { "Gemini Models": "Gemini", "Claude and GPT models": "Claude и GPT" };
   var LIMITS = { "Weekly Limit Remaining": "Неделя", "Five Hour Limit Remaining": "5 часов" };
   function quotaView(text) {
     var rows = String(text || "").split("\n").map(function (l) { return l.split("\t"); })
-      .filter(function (r) { return r.length === 4 && /^\d+%$/.test(r[2].trim()) && !isNaN(Date.parse(r[3])); });
+      .filter(function (r) { return r.length === 4 && /^\d+%$/.test(r[2].trim()) && !isNaN(Date.parse(r[3])); })
+      .filter(function (r) { return /^gemini/i.test(r[0]); });  // only Gemini limits are shown
     if (!rows.length) return null;
     var box = el("div", "quota");
     rows.forEach(function (r) {
       var pct = parseInt(r[2], 10), reset = Date.parse(r[3]) / 1000;
       var line = el("div", "qrow");
-      line.appendChild(el("span", "qname", (GROUPS[r[0]] || r[0]) + " · " + (LIMITS[r[1]] || r[1])));
+      line.appendChild(el("span", "qname", LIMITS[r[1]] || r[1]));
       var bar = el("span", "bar"), fill = el("i", pct >= 50 ? "hi" : pct >= 20 ? "mid" : "lo");
       fill.style.width = pct + "%"; bar.appendChild(fill); line.appendChild(bar);
       line.appendChild(el("b", "", pct + "%"));
