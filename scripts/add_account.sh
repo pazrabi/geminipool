@@ -27,6 +27,8 @@ LOGIN_FILE="$PROFILE/.gemini/antigravity-cli/antigravity-oauth-token"
 SESSION="login-$ID"
 TOKEN="$(cat "$TOKEN_FILE")"
 SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ServerAliveInterval=15 "$HOST")
+# ssh reads stdin unless told not to, which would swallow what you paste; only the calls that need stdin use SSH.
+SSHN=(ssh -n -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ServerAliveInterval=15 "$HOST")
 
 api() { curl -sS -m 90 -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$@"; }
 remote() { "${SSH[@]}" bash -s -- "$ID" "$@"; }
@@ -51,7 +53,7 @@ case "$status" in
 esac
 
 # 2. Already logged in?
-if "${SSH[@]}" "test -s '$LOGIN_FILE'" && [ "${FORCE:-}" != "1" ]; then
+if "${SSHN[@]}" "test -s '$LOGIN_FILE'" && [ "${FORCE:-}" != "1" ]; then
   echo "$ID already has a Google login. Use FORCE=1 to log in again."
 else
   trap cleanup EXIT
@@ -67,7 +69,7 @@ install -d -o pool -g pool "$PROFILE"
 tmux new-session -d -s "$SESSION" -x 200 -y 50 "su pool -s /bin/bash -c 'cd $DATA && HOME=$PROFILE /home/pool/.local/bin/agy'"
 REMOTE
 
-  pane() { "${SSH[@]}" "tmux capture-pane -p -t '$SESSION' -S -200"; }
+  pane() { "${SSHN[@]}" "tmux capture-pane -p -t '$SESSION' -S -200"; }
 
   # 4. Choose "Google OAuth" (first option) and 5. read the sign-in URL from the screen.
   signin_url=""
@@ -75,7 +77,7 @@ REMOTE
   for _ in $(seq 1 40); do
     screen=$(pane 2>/dev/null || true)
     if [ "$chose" = 0 ] && grep -q "Select login method" <<<"$screen"; then
-      "${SSH[@]}" "tmux send-keys -t '$SESSION' Enter"; chose=1; sleep 1; continue
+      "${SSHN[@]}" "tmux send-keys -t '$SESSION' Enter"; chose=1; sleep 1; continue
     fi
     signin_url=$(python3 -c '
 import re, sys
@@ -88,7 +90,7 @@ if m:
     signin_url=""; sleep 1
   done
   if [ -z "$signin_url" ]; then
-    echo "Could not get the sign-in link from agy. What the server shows:"; pane | tail -15; exit 1
+    echo "Could not get the sign-in link from agy. What the server shows:"; pane | grep -v '^[[:space:]]*$' | tail -15; exit 1
   fi
 
   echo
@@ -102,7 +104,7 @@ if m:
   # 6. Take the code and type it into agy.
   read -r -s -p "Code: " CODE; echo
   CODE=$(tr -d '[:space:]' <<<"$CODE")
-  if ! [[ "$CODE" =~ ^[A-Za-z0-9/_.~-]{20,400}$ ]]; then
+  if ! [[ "$CODE" =~ ^[A-Za-z0-9/_.~-]{20,250}$ ]]; then
     echo "That does not look like a Google code (expected something like 4/0A...). Run the script again."; exit 1
   fi
   printf '%s' "$CODE" | "${SSH[@]}" "umask 077; cat > '/run/login-code-$ID'"
@@ -118,11 +120,11 @@ REMOTE
   # 7. Wait until agy has stored the login.
   printf 'Waiting for the login'
   for _ in $(seq 1 "$WAIT_S"); do
-    if "${SSH[@]}" "test -s '$LOGIN_FILE'"; then echo " done."; break; fi
+    if "${SSHN[@]}" "test -s '$LOGIN_FILE'"; then echo " done."; break; fi
     printf '.'; sleep 1
   done
-  if ! "${SSH[@]}" "test -s '$LOGIN_FILE'"; then
-    echo; echo "The login did not complete. What agy shows now:"; pane | tail -12
+  if ! "${SSHN[@]}" "test -s '$LOGIN_FILE'"; then
+    echo; echo "The login did not complete. What agy shows now:"; pane | grep -v '^[[:space:]]*$' | tail -12
     echo "The code may have expired or been wrong; run the script again."; exit 1
   fi
   cleanup; trap - EXIT

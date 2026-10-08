@@ -25,6 +25,14 @@ each task becomes a git branch `pool/<id>` plus a short report. Agents never mer
 `[{"id": "acc1", "role": "developer", "model": "gemini-3.8-flash-high"}]`. Roles: `developer`, `reviewer`, `debugger`.
 Log an agent in once on the server: see `deploy/SETUP.md` (Google OAuth, kept alive in tmux).
 
+## Adding agents (Google accounts)
+
+On your Mac: `scripts/add_account.sh acc2 [developer|reviewer|debugger]`. It registers the agent in the pool, starts agy's
+Google sign-in on the server, opens the sign-in page, asks you to paste the code Google shows, and checks the login.
+The dashboard has the same pieces: **+ Добавить агента**, a card state «Нужен вход» with the command to run, and buttons to
+turn an agent off or delete it. An agent takes no task until its login exists. `POOL_MAX_CONCURRENT` (server env, now 2) caps
+how many tasks run at once on the small server. Per-agent `proxy` in `accounts.json` routes one agent through an HTTPS proxy.
+
 ## Connecting Claude
 
 **Claude Code**: `claude mcp add --scope user --transport http gemini-pool <PUBLIC_URL>/mcp --header "Authorization: Bearer $(cat ~/projects/.gemini-pool-mcp-token)"`
