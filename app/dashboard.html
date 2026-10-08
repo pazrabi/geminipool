@@ -114,7 +114,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
   "use strict";
   var KEY = "gemini-pool-token";
   var token = null, filter = "all", openTasks = {}, taskDetail = {}, quotaBusy = {}, quotaFresh = {}, data = null, timer = null, lastSig = "";
-  var modelLists = {}, modelLoading = {}, modelBusy = {}, modelErr = {};
+  var modelLists = {}, modelLoading = {}, modelBusy = {}, modelErr = {}, clockOffset = 0;
 
   function store(v) { try { if (v === null) localStorage.removeItem(KEY); else localStorage.setItem(KEY, v); } catch (e) {} }
   function load() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
@@ -169,6 +169,22 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
     return Math.floor(sec / 3600) + " ч " + Math.floor((sec % 3600) / 60) + " мин";
   }
   function ago(ts, now) { return span(now - ts) + " назад"; }
+
+  // Live timers: the server's clock is used, so a wrong clock on this computer cannot skew them.
+  function serverNow() { return Date.now() / 1000 + clockOffset; }
+  function liveSpan(since, prefix) {
+    var s = el("span", "live");
+    s.dataset.since = String(since); s.dataset.prefix = prefix;
+    s.textContent = prefix + span(serverNow() - since);
+    return s;
+  }
+  function tick() {
+    var nodes = document.querySelectorAll("[data-since]"), now = serverNow();
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].textContent = nodes[i].dataset.prefix + span(now - Number(nodes[i].dataset.since));
+    }
+  }
+  setInterval(tick, 1000);
 
   function api(path, opts) {
     opts = opts || {};
@@ -263,7 +279,13 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
       card.appendChild(top);
 
       var info = el("div", "row muted");
-      info.textContent = a.busy_task ? "Задача: " + a.busy_task : (a.last_used ? "Последняя работа: " + ago(a.last_used, data.now) : "Ещё не работал");
+      if (a.busy_task) {
+        var cur = data.tasks.filter(function (t) { return t.id === a.busy_task; })[0];
+        info.appendChild(document.createTextNode("Задача " + a.busy_task + " · "));
+        info.appendChild(liveSpan(cur && (cur.started_at || cur.updated_at) || a.last_used, "идёт "));
+      } else {
+        info.textContent = a.last_used ? "Последняя работа: " + ago(a.last_used, data.now) : "Ещё не работал";
+      }
       card.appendChild(info);
       card.appendChild(modelRow(a));
 
@@ -305,6 +327,9 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
       s.textContent = t.branch + (r.pushed ? "" : " (на сервере, в GitHub не отправлена)"); return s;
     })() : "—");
     kv(grid, "Попыток", String(t.attempts));
+    if (t.status === "running") kv(grid, "Время работы", liveSpan(t.started_at || t.updated_at, ""));
+    else if (t.started_at) kv(grid, "Время работы", span(t.updated_at - t.started_at));
+    if (t.created_at) kv(grid, "Поставлена", dateTime(t.created_at));
     if ("model" in r) kv(grid, "Модель", r.model || "по умолчанию (выбирает agy)");
     else if (t.model) kv(grid, "Модель (задана)", t.model);
     if (d) kv(grid, "Разрешённые файлы", (d.allowed_files || []).join(", "));
@@ -338,8 +363,13 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
       head.appendChild(pill("s-" + t.status, STATUS[t.status] || t.status));
       head.appendChild(el("span", "mono", t.id));
       head.appendChild(el("span", "goal", t.goal));
-      var dur = t.status === "running" ? "идёт " + span(data.now - t.updated_at) : ago(t.updated_at, data.now);
-      head.appendChild(el("span", "meta", (t.account_id ? t.account_id + " · " : "") + t.role + " · " + dur));
+      var meta = el("span", "meta");
+      meta.appendChild(document.createTextNode((t.account_id ? t.account_id + " · " : "") + t.role + " · "));
+      if (t.status === "running") meta.appendChild(liveSpan(t.started_at || t.updated_at, "идёт "));
+      else if (t.status === "queued") meta.appendChild(liveSpan(t.updated_at, "ждёт "));
+      else meta.appendChild(document.createTextNode(
+        (t.started_at ? "заняло " + span(t.updated_at - t.started_at) + " · " : "") + ago(t.updated_at, data.now)));
+      head.appendChild(meta);
       head.onclick = function () {
         openTasks[t.id] = !openTasks[t.id];
         if (openTasks[t.id]) loadDetail(t.id);
@@ -395,6 +425,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
   function refresh() {
     clearTimeout(timer);
     api("/api/overview").then(function (d) {
+      clockOffset = d.now - Date.now() / 1000;
       // Rebuild the page only when something changed (or every 15 s for the countdowns), and never
       // while the user has text selected, so clicks and selections are not destroyed by a refresh.
       var sig = JSON.stringify([d.accounts, d.tasks, d.events, Math.floor(d.now / 15)]);

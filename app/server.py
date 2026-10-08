@@ -156,7 +156,7 @@ def _task_summary(t: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": t["id"], "role": t["role"], "status": t["status"], "goal": t["goal"], "repo": t["repo"],
         "account_id": t["account_id"], "attempts": t["attempts"], "branch": t["branch"], "model": t["model"],
-        "created_at": t["created_at"], "updated_at": t["updated_at"],
+        "created_at": t["created_at"], "updated_at": t["updated_at"], "started_at": t["started_at"],
         "pushed": report.get("pushed"), "tests_passed": tests.get("passed") if tests else None,
         "note": note,
     }

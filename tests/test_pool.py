@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -299,6 +300,15 @@ class PoolTests(unittest.TestCase):
         pool = Pool(data, runner=self.agent, accounts=self.accounts, allow_local_repos=True)
         tid = pool.submit("developer", "g", self.url, ["src/*.py"], model=None)
         self.assertIsNone(pool.get_task(tid)["model"])
+
+    def test_start_time_is_recorded_when_a_task_is_claimed(self):
+        tid = self.submit()
+        self.assertIsNone(self.pool.get_task(tid)["started_at"])  # waiting in the queue
+        before = time.time()
+        self.pool._claim_next()
+        started = self.pool.get_task(tid)["started_at"]
+        self.assertGreaterEqual(started, before)
+        self.assertLessEqual(started, time.time())
 
     def test_set_model_validates_persists_and_resets(self):
         self.pool.models_lister = lambda env: (True, "gemini-a\tGemini A\ngemini-b\tGemini B")

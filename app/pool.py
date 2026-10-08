@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     allowed_files TEXT NOT NULL,
     test_cmd TEXT,
     model TEXT,
+    started_at REAL,
     status TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
     account_id TEXT,
@@ -175,9 +176,11 @@ class Pool:
         conn = self._db()
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
-        # Databases created before per-task models existed get the column added in place.
-        if "model" not in {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}:
-            conn.execute("ALTER TABLE tasks ADD COLUMN model TEXT")
+        # Databases created before these columns existed get them added in place.
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+        for column in ("model TEXT", "started_at REAL"):
+            if column.split()[0] not in existing:
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {column}")
         conn.close()
 
     def _sync_accounts(self) -> None:
@@ -382,9 +385,9 @@ class Pool:
                     "UPDATE accounts SET busy_task = ?, last_used = ? WHERE id = ?", (task["id"], t, acc["id"])
                 )
                 conn.execute(
-                    "UPDATE tasks SET status = 'running', account_id = ?, attempts = attempts + 1, updated_at = ?"
-                    " WHERE id = ?",
-                    (acc["id"], t, task["id"]),
+                    "UPDATE tasks SET status = 'running', account_id = ?, attempts = attempts + 1, updated_at = ?,"
+                    " started_at = ? WHERE id = ?",
+                    (acc["id"], t, t, task["id"]),
                 )
                 conn.execute("COMMIT")
                 return task["id"], acc["id"]
