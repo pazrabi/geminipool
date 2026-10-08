@@ -155,6 +155,14 @@ class OAuthHTTPTests(unittest.TestCase):
         status, _, _ = self.call("GET", "/api/overview", headers={"Authorization": "Bearer " + access})
         self.assertEqual(status, 401)
 
+    def test_initialize_tells_claude_how_to_review_finished_tasks(self):
+        rpc = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        status, _, data = self.call("POST", "/mcp", rpc, {"Authorization": "Bearer " + POOL_TOKEN})
+        text = json.loads(data)["result"]["instructions"]
+        self.assertEqual(status, 200)
+        for needle in ("Monitor", "pool_watch.py", "git fetch origin pool/", "недоверенные"):
+            self.assertIn(needle, text)
+
     def test_drain_endpoint_needs_the_pool_token_and_toggles(self):
         auth = {"Authorization": "Bearer " + POOL_TOKEN, "Content-Type": "application/json"}
         status, _, _ = self.call("POST", "/api/drain", '{"drain": true}', {"Content-Type": "application/json"})
