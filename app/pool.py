@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import git_ops
+import housekeeping
 
 log = logging.getLogger("pool")
 
@@ -158,9 +159,41 @@ class Pool:
         self.accounts_cfg = {a["id"]: a for a in accounts}
         self.running: set[asyncio.Task] = set()
         self._repo_lock = threading.Lock()
+        self.disk_low = False
+        self._last_space_attempt = 0.0
         self._init_db()
         self._sync_accounts()
         self._recover()
+        self.housekeep()
+
+    # ---- disk space ----------------------------------------------------
+
+    def housekeep(self, aggressive: bool = False) -> dict[str, int]:
+        try:
+            return housekeeping.cleanup(self, aggressive)
+        except Exception:
+            log.exception("housekeeping failed")
+            return {"stripped": 0, "retired": 0}
+
+    def _disk_ok(self) -> bool:
+        """False while there is too little free space to run a task safely (a full disk breaks SQLite)."""
+        if housekeeping.free_bytes(self.data) >= housekeeping.MIN_FREE_BYTES:
+            self.disk_low = False
+            return True
+        if time.time() - self._last_space_attempt > 60:  # the cleanup is not free, so not every second
+            self._last_space_attempt = time.time()
+            if housekeeping.ensure_space(self):
+                self.disk_low = False
+                return True
+        if not self.disk_low:
+            free_mb = housekeeping.free_bytes(self.data) // (1024 * 1024)
+            log.error("disk space is low: %d MB free; not starting tasks", free_mb)
+            try:
+                self._event("disk_low", None, None, f"Free space on the volume: {free_mb} MB. New tasks wait.")
+            except Exception:
+                pass  # recording the event needs disk space too
+        self.disk_low = True
+        return False
 
     # ---- storage -------------------------------------------------------
 
@@ -377,10 +410,11 @@ class Pool:
             running = conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'running'").fetchone()[0]
         finally:
             conn.close()
-        return {"draining": self.draining, "running": running, "safe_to_deploy": self.draining and running == 0}
+        return {"draining": self.draining, "running": running, "safe_to_deploy": self.draining and running == 0,
+                "disk": housekeeping.disk_info(self.data)}
 
     def _claim_next(self) -> tuple[str, str] | None:
-        if self.draining:
+        if self.draining or not self._disk_ok():
             return None
         conn = self._db()
         try:
@@ -462,9 +496,13 @@ class Pool:
 
     async def run_forever(self, interval: float = 1.0) -> None:
         self._loop = asyncio.get_running_loop()
+        last_housekeeping = time.time()
         while True:
             try:
                 await self.dispatch_once()
+                if time.time() - last_housekeeping > housekeeping.INTERVAL_S:
+                    last_housekeeping = time.time()
+                    await asyncio.to_thread(self.housekeep)
             except Exception:
                 log.exception("dispatch failed")
             await asyncio.sleep(interval)
@@ -499,6 +537,8 @@ class Pool:
             self._event("internal", account_id, task_id, str(exc))
             self._finish(task_id, "failed", {"error": f"internal: {exc}"})
         finally:
+            # Free the space first: on a full disk the database write below would fail otherwise.
+            housekeeping.strip_heavy(self.worktrees / task_id)  # virtualenvs etc. are rebuilt by the next test run
             self._exec("UPDATE accounts SET busy_task = NULL, last_used = ? WHERE id = ?", (time.time(), account_id))
 
     async def _run(self, task_id: str, account_id: str) -> None:

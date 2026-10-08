@@ -39,6 +39,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .s-idle { color: var(--idle); background: var(--idle-bg); }
 .banner { margin-top: 14px; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--wait); color: var(--wait); background: var(--wait-bg); font-weight: 600; }
 .banner.safe { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
+.banner.bad { border-color: var(--bad); color: var(--bad); background: var(--bad-bg); }
 .counters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 16px; }
 .counter { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
 .counter b { display: block; font-size: 24px; }
@@ -217,7 +218,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
   var KIND = {
     "quota limit": "Лимит", "account auth error": "Нет входа", "network error": "Сеть", "timeout": "Таймаут",
     "agent_error": "Ошибка агента", "violation": "Нарушение правил", "push_error": "Ошибка пуша",
-    "internal": "Внутренняя ошибка", "quota_check_failed": "Проверка лимита"
+    "internal": "Внутренняя ошибка", "quota_check_failed": "Проверка лимита", "disk_low": "Мало места на диске"
   };
 
   function accountState(a, now) {
@@ -417,7 +418,15 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
   function renderMaintenance() {
     var banner = document.getElementById("banner"), btn = document.getElementById("drain");
     btn.textContent = data.draining ? "Возобновить приём" : "Пауза приёма задач";
-    banner.hidden = !data.draining;
+    var lowDisk = data.disk && data.disk.low;
+    banner.hidden = !data.draining && !lowDisk;
+    if (lowDisk) {
+      banner.className = "banner bad";
+      banner.textContent = "Мало места на диске пула: свободно " + Math.floor(data.disk.free / 1048576) +
+        " МБ из " + Math.floor(data.disk.total / 1048576) + " МБ. Новые задачи не запускаются, пока место не освободится" +
+        " (пул чистит старые рабочие копии сам; если не помогает, увеличьте том в Railway).";
+      return;
+    }
     if (!data.draining) return;
     banner.className = "banner" + (data.safe_to_deploy ? " safe" : "");
     banner.textContent = data.safe_to_deploy
@@ -469,7 +478,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
       clockOffset = d.now - Date.now() / 1000;
       // Rebuild the page only when something changed (or every 15 s for the countdowns), and never
       // while the user has text selected, so clicks and selections are not destroyed by a refresh.
-      var sig = JSON.stringify([d.accounts, d.tasks, d.events, d.draining, d.running, Math.floor(d.now / 15)]);
+      var sig = JSON.stringify([d.accounts, d.tasks, d.events, d.draining, d.running, d.disk && d.disk.low, Math.floor(d.now / 15)]);
       var selecting = String(window.getSelection ? window.getSelection() : "").length > 0 ||
         (document.activeElement && document.activeElement.tagName === "SELECT");
       var first = !data;

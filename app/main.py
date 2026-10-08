@@ -11,6 +11,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import executor
+import housekeeping
 import server
 from oauth import OAuth
 from pool import Pool
@@ -29,6 +30,9 @@ async def main() -> None:
     if len(token) < 32:
         raise SystemExit("POOL_MCP_TOKEN must be set (at least 32 characters)")
     data = Path(os.environ.get("POOL_DATA", "/data"))
+    # Before anything touches the database: if the volume filled up, SQLite cannot even open. Nothing is
+    # running at process start, so the rebuildable bulk in the working copies can go at once.
+    housekeeping.strip_all(data / "worktrees")
     pool = Pool(
         data_dir=data,
         runner=executor.agy_runner,
