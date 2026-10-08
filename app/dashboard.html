@@ -59,6 +59,13 @@ a { color: var(--accent); }
 .kv > div:nth-child(odd) { color: var(--muted); }
 .event { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; margin-bottom: 8px; }
 .event .line { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.quota { margin-top: 8px; display: grid; gap: 6px; }
+.qrow { display: grid; grid-template-columns: 1fr 90px 40px; gap: 8px; align-items: center; font-size: 13px; }
+.qrow .qname { grid-column: 1 / -1; }
+.qrow .muted { grid-column: 1 / -1; margin-top: -4px; font-size: 12px; }
+.bar { height: 8px; border-radius: 99px; background: var(--idle-bg); overflow: hidden; grid-column: 1 / 3; display: block; }
+.bar i { display: block; height: 100%; border-radius: 99px; }
+.bar .hi { background: var(--ok); } .bar .mid { background: var(--wait); } .bar .lo { background: var(--bad); }
 .empty { color: var(--muted); padding: 14px; text-align: center; border: 1px dashed var(--line); border-radius: 12px; }
 #login { max-width: 420px; margin-top: 12vh; }
 #login input { width: 100%; font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); margin: 12px 0; }
@@ -125,6 +132,27 @@ a { color: var(--accent); }
       if (i % 2 === 1) {
         var a = el("a", "", part); a.href = part; a.target = "_blank"; a.rel = "noopener noreferrer"; box.appendChild(a);
       } else if (part) box.appendChild(document.createTextNode(part));
+    });
+    return box;
+  }
+
+  // agy /usage prints tab-separated rows: <model group> <limit name> <percent> <ISO reset time>.
+  var GROUPS = { "Gemini Models": "Gemini", "Claude and GPT models": "Claude и GPT" };
+  var LIMITS = { "Weekly Limit Remaining": "Неделя", "Five Hour Limit Remaining": "5 часов" };
+  function quotaView(text) {
+    var rows = String(text || "").split("\n").map(function (l) { return l.split("\t"); })
+      .filter(function (r) { return r.length === 4 && /^\d+%$/.test(r[2].trim()) && !isNaN(Date.parse(r[3])); });
+    if (!rows.length) return null;
+    var box = el("div", "quota");
+    rows.forEach(function (r) {
+      var pct = parseInt(r[2], 10), reset = Date.parse(r[3]) / 1000;
+      var line = el("div", "qrow");
+      line.appendChild(el("span", "qname", (GROUPS[r[0]] || r[0]) + " · " + (LIMITS[r[1]] || r[1])));
+      var bar = el("span", "bar"), fill = el("i", pct >= 50 ? "hi" : pct >= 20 ? "mid" : "lo");
+      fill.style.width = pct + "%"; bar.appendChild(fill); line.appendChild(bar);
+      line.appendChild(el("b", "", pct + "%"));
+      line.appendChild(el("span", "muted", "сброс " + dateTime(reset)));
+      box.appendChild(line);
     });
     return box;
   }
@@ -210,7 +238,7 @@ a { color: var(--accent); }
       var res = quotaFresh[a.id] || (a.quota_checked_at ? { checked_at: a.quota_checked_at, ok: !!a.quota_ok, text: a.quota_text } : null);
       if (res) {
         q.appendChild(el("span", "muted", "  проверено " + dateTime(res.checked_at) + (res.ok ? "" : " — не удалось")));
-        q.appendChild(linkified(res.text || "(пустой ответ)"));
+        q.appendChild((res.ok && quotaView(res.text)) || linkified(res.text || "(пустой ответ)"));
       }
       card.appendChild(q);
       box.appendChild(card);
