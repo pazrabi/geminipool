@@ -118,7 +118,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
   "use strict";
   var KEY = "gemini-pool-token";
   var token = null, filter = "all", openTasks = {}, taskDetail = {}, quotaBusy = {}, quotaFresh = {}, data = null, timer = null, lastSig = "";
-  var modelLists = {}, modelLoading = {}, modelBusy = {}, modelErr = {}, clockOffset = 0;
+  var modelLists = {}, modelLoading = {}, modelBusy = {}, modelErr = {}, clockOffset = 0, recovering = {};
 
   function store(v) { try { if (v === null) localStorage.removeItem(KEY); else localStorage.setItem(KEY, v); } catch (e) {} }
   function load() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
@@ -350,6 +350,16 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
     if (r.summary) { body.appendChild(el("div", "row muted", "Ответ агента:")); body.appendChild(pre(r.summary)); }
     if (r.tests && r.tests.tail) { body.appendChild(el("div", "row muted", "Вывод тестов:")); body.appendChild(pre(r.tests.tail)); }
     if (r.tail) { body.appendChild(el("div", "row muted", "Вывод агента при ошибке:")); body.appendChild(pre(r.tail)); }
+    if (t.status === "failed" && /^internal/.test(r.error || "")) {
+      var rec = el("div", "row");
+      var rb = el("button", "", recovering[t.id] ? "Выполняется…" : "Повторить завершение");
+      rb.disabled = !!recovering[t.id];
+      rb.title = "Пул заново проверит файлы, прогонит тесты, закоммитит и запушит. Агент не запускается, лимит не тратится.";
+      rb.onclick = function (ev) { ev.stopPropagation(); recoverTask(t.id); };
+      rec.appendChild(rb);
+      rec.appendChild(el("span", "muted", "  работа агента сохранена на сервере; лимит не тратится"));
+      body.appendChild(rec);
+    }
     if (!d) body.appendChild(el("div", "row muted", "Загрузка…"));
     return body;
   }
@@ -414,6 +424,13 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
       ? "Режим обслуживания: ничего не выполняется, сервис можно безопасно обновлять. Новые задачи ждут в очереди."
       : "Режим обслуживания: новые задачи не запускаются. Ещё выполняется задач: " + data.running +
         ". Обновлять сервис можно, когда их станет 0.";
+  }
+
+  function recoverTask(id) {
+    recovering[id] = true; renderTasks();
+    api("/api/tasks/" + id + "/recover", { method: "POST" })
+      .catch(function (e) { if (e.auth) showLogin("Токен не подошёл"); else alert("Не удалось: " + e.message); })
+      .then(function () { recovering[id] = false; lastSig = ""; refresh(); });
   }
 
   function toggleDrain() {

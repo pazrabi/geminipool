@@ -28,7 +28,8 @@ def _git(args: list[str], cwd: Path | None = None, token: str | None = None, che
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env, timeout=600)
     if check and proc.returncode != 0:
         # The error text never contains the token: git prints only its own stderr.
-        raise GitError(f"git {args[0]} failed: {proc.stderr.strip()[-800:]}")
+        detail = (proc.stderr.strip() or proc.stdout.strip())[-800:]  # some git messages go to stdout
+        raise GitError(f"git {' '.join(a for a in args if not a.startswith('-c'))[:60]} failed: {detail}")
     return proc.stdout.strip()
 
 
@@ -86,6 +87,9 @@ def stage_and_diff(wt: Path, base: str) -> tuple[list[str], str]:
 
 
 def commit(wt: Path, message: str) -> None:
+    """Commit what is staged. If the agent already committed its own work there is nothing left to commit."""
+    if not _git(["diff", "--cached", "--name-only"], cwd=wt):
+        return
     _git(["-c", "user.name=gemini-pool", "-c", "user.email=pool@localhost", "commit", "-q", "-m", message], cwd=wt)
 
 

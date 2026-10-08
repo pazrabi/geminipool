@@ -398,6 +398,15 @@ button{{font:inherit;padding:10px 18px;cursor:pointer}}.err{{color:#c8382d}}.mon
                 return self._json(200, _pool.check_quota(match.group(1)))
             except ValueError as exc:
                 return self._json(404, {"error": str(exc)})
+        recover = re.fullmatch(r"/api/tasks/([0-9a-f]{12})/recover", path)
+        if recover:
+            if not self._authorized():
+                return self._json(401, {"error": "unauthorized"})
+            assert _pool is not None
+            try:
+                return self._json(200, _task_summary(_pool.recover_task(recover.group(1))))
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
         if path == "/api/drain":
             if not self._authorized():
                 return self._json(401, {"error": "unauthorized"})

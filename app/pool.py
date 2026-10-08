@@ -144,6 +144,7 @@ class Pool:
         # Maintenance mode: no new task is started while it is on. It lives in memory only, so the restart
         # that a deploy causes switches it off again by itself and the queue never stays stuck.
         self.draining = False
+        self._loop: asyncio.AbstractEventLoop | None = None
         self.data = Path(data_dir)
         self.repos = self.data / "repos"
         self.worktrees = self.data / "worktrees"
@@ -425,7 +426,42 @@ class Pool:
             job.add_done_callback(self.running.discard)
             started += 1
 
+    def recover_task(self, task_id: str) -> dict[str, Any]:
+        """Redo the finishing steps (checks, tests, commit, push) for a task that failed with an internal error.
+
+        The agent is not run again, so no quota is spent: its work is still in the task's working copy.
+        """
+        task = self.get_task(task_id)
+        if task is None:
+            raise ValueError("unknown task")
+        if task["status"] != "failed" or not str((task["report"] or {}).get("error", "")).startswith("internal"):
+            raise ValueError("only tasks that failed with an internal pool error can be recovered")
+        wt = self.worktrees / task_id
+        if not wt.is_dir():
+            raise ValueError("the task's working copy no longer exists")
+        account_id = task["account_id"] or next(iter(self.accounts_cfg))
+        now = time.time()
+        self._exec("UPDATE tasks SET status = 'running', started_at = ?, updated_at = ? WHERE id = ?", (now, now, task_id))
+        coro = self._recover_finish(task, account_id, wt)
+        if self._loop is not None and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(coro, self._loop)  # runs in the background; the dashboard shows progress
+        else:
+            asyncio.run(coro)
+        return self.get_task(task_id) or task
+
+    async def _recover_finish(self, task: dict[str, Any], account_id: str, wt: Path) -> None:
+        note = "(result recovered after an internal pool error; the agent's own answer was not saved)"
+        try:
+            await self._finish_success(
+                task, account_id, note, wt, f"pool/{task['id']}", task["model"] or self._model_for(account_id)
+            )
+        except Exception as exc:
+            log.exception("recovery of task %s failed", task["id"])
+            self._event("internal", account_id, task["id"], f"recovery failed: {exc}")
+            self._finish(task["id"], "failed", {"error": f"internal: {exc}", "account": account_id})
+
     async def run_forever(self, interval: float = 1.0) -> None:
+        self._loop = asyncio.get_running_loop()
         while True:
             try:
                 await self.dispatch_once()

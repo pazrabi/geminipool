@@ -43,6 +43,18 @@ def write_file(rel, text="x\n"):
     return act
 
 
+def commit_itself(rel, text="x\n"):
+    """An agent that commits its own work instead of leaving it uncommitted."""
+    def act(wd):
+        write_file(rel, text)(wd)
+        env = {"GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@a", "GIT_COMMITTER_NAME": "a",
+               "GIT_COMMITTER_EMAIL": "a@a", "PATH": "/usr/bin:/bin:/usr/local/bin"}
+        subprocess.run(["git", "add", "-A"], cwd=wd, check=True, capture_output=True, env=env)
+        subprocess.run(["git", "commit", "-q", "-m", "agent commit"], cwd=wd, check=True, capture_output=True, env=env)
+        return RunResult(0, json.dumps({"response": "committed"}), "")
+    return act
+
+
 def failing(stderr):
     return lambda wd: RunResult(1, "", stderr)
 
@@ -95,6 +107,17 @@ class PoolTests(unittest.TestCase):
         self.assertTrue(t["report"]["tests"]["passed"])
         self.assertEqual(t["branch"], f"pool/{tid}")
         self.assertFalse(t["report"]["pushed"])  # no push token configured
+
+    def test_agent_that_commits_by_itself_still_finishes(self):
+        self.agent.script = [commit_itself("src/x.py")]
+        tid = self.submit()
+        self.run_pool()
+        t = self.pool.get_task(tid)
+        self.assertEqual(t["status"], "done", t["report"])
+        self.assertEqual(t["report"]["changed_files"], ["src/x.py"])
+        wt = self.tmp / "data" / "worktrees" / tid
+        log = subprocess.run(["git", "log", "--oneline"], cwd=wt, capture_output=True, text=True).stdout
+        self.assertIn("agent commit", log)
 
     def test_change_outside_allowed_files_fails(self):
         self.agent.script = [write_file("secrets.env")]
@@ -300,6 +323,41 @@ class PoolTests(unittest.TestCase):
         pool = Pool(data, runner=self.agent, accounts=self.accounts, allow_local_repos=True)
         tid = pool.submit("developer", "g", self.url, ["src/*.py"], model=None)
         self.assertIsNone(pool.get_task(tid)["model"])
+
+    def _break_task_with_internal_error(self):
+        """A task whose agent work is on disk but whose finishing step crashed (as the old commit bug did)."""
+        self.agent.script = [write_file("src/x.py")]
+        tid = self.submit()
+        self.run_pool()
+        self.assertEqual(self.pool.get_task(tid)["status"], "done")
+        self.pool._finish(tid, "failed", {"error": "internal: git -c failed: ", "account": "acc1"})
+        return tid
+
+    def test_recover_redoes_the_finishing_steps_without_running_the_agent(self):
+        tid = self._break_task_with_internal_error()
+        calls_before = len(self.agent.calls)
+        task = self.pool.recover_task(tid)
+        self.assertEqual(len(self.agent.calls), calls_before)  # no quota is spent
+        task = self.pool.get_task(tid)
+        self.assertEqual(task["status"], "done", task["report"])
+        self.assertEqual(task["report"]["changed_files"], ["src/x.py"])
+        self.assertIn("recovered", task["report"]["summary"])
+
+    def test_recover_refuses_tasks_that_did_not_hit_an_internal_error(self):
+        self.agent.script = [write_file("src/x.py")]
+        tid = self.submit()
+        self.run_pool()
+        with self.assertRaises(ValueError):
+            self.pool.recover_task(tid)  # status done
+        with self.assertRaises(ValueError):
+            self.pool.recover_task("nope00000000")
+
+    def test_recover_needs_the_working_copy(self):
+        tid = self._break_task_with_internal_error()
+        import shutil
+        shutil.rmtree(self.tmp / "data" / "worktrees" / tid)
+        with self.assertRaises(ValueError):
+            self.pool.recover_task(tid)
 
     def test_draining_stops_new_tasks_but_keeps_the_queue(self):
         tid = self.submit()
