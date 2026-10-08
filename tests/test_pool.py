@@ -250,6 +250,46 @@ class PoolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.pool.list_models("nope")
 
+    def test_task_model_overrides_account_model(self):
+        accounts = [{"id": "acc1", "role": "developer", "model": "gemini-a"}]
+        pool = Pool(self.tmp / "data3", runner=self.agent, accounts=accounts, allow_local_repos=True,
+                    models_lister=lambda env: (True, "gemini-a\tGemini A\nclaude-b\tClaude B"))
+        self.agent.script = [write_file("src/x.py")]
+        tid = pool.submit("developer", "g", self.url, ["src/*.py"], model="claude-b")
+
+        async def go():
+            await pool.dispatch_once()
+            await asyncio.gather(*list(pool.running))
+        asyncio.run(go())
+        self.assertEqual(self.agent.calls[-1]["model"], "claude-b")
+        self.assertEqual(pool.get_task(tid)["report"]["model"], "claude-b")
+
+    def test_unknown_task_model_is_rejected_with_the_available_list(self):
+        self.pool.models_lister = lambda env: (True, "gemini-a\tGemini A\nclaude-b\tClaude B")
+        with self.assertRaises(ValueError) as ctx:
+            self.submit(model="gpt-9")
+        self.assertIn("claude-b", str(ctx.exception))
+
+    def test_model_check_is_skipped_when_the_list_is_unavailable(self):
+        self.pool.models_lister = lambda env: (False, "agy failed")
+        tid = self.submit(model="anything")
+        self.assertEqual(self.pool.get_task(tid)["model"], "anything")
+
+    def test_old_database_gets_the_model_column(self):
+        import sqlite3
+        data = self.tmp / "old"
+        data.mkdir()
+        conn = sqlite3.connect(data / "pool.db")
+        conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, role TEXT NOT NULL, goal TEXT NOT NULL, repo TEXT NOT NULL,"
+                     " base_branch TEXT NOT NULL, allowed_files TEXT NOT NULL, test_cmd TEXT, status TEXT NOT NULL,"
+                     " attempts INTEGER NOT NULL DEFAULT 0, account_id TEXT, branch TEXT, report TEXT,"
+                     " not_before REAL NOT NULL DEFAULT 0, created_at REAL NOT NULL, updated_at REAL NOT NULL)")
+        conn.commit()
+        conn.close()
+        pool = Pool(data, runner=self.agent, accounts=self.accounts, allow_local_repos=True)
+        tid = pool.submit("developer", "g", self.url, ["src/*.py"], model=None)
+        self.assertIsNone(pool.get_task(tid)["model"])
+
     def test_set_model_validates_persists_and_resets(self):
         self.pool.models_lister = lambda env: (True, "gemini-a\tGemini A\nclaude-b\tClaude B")
         self.pool.set_model("acc1", "claude-b")

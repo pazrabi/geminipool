@@ -306,6 +306,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
     })() : "—");
     kv(grid, "Попыток", String(t.attempts));
     if ("model" in r) kv(grid, "Модель", r.model || "по умолчанию (выбирает agy)");
+    else if (t.model) kv(grid, "Модель (задана)", t.model);
     if (d) kv(grid, "Разрешённые файлы", (d.allowed_files || []).join(", "));
     if (d && d.test_cmd) kv(grid, "Команда тестов", d.test_cmd);
     if (r.tests) kv(grid, "Тесты", r.tests.passed ? "пройдены" : "не пройдены");

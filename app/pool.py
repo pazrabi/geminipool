@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     base_branch TEXT NOT NULL,
     allowed_files TEXT NOT NULL,
     test_cmd TEXT,
+    model TEXT,
     status TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
     account_id TEXT,
@@ -138,6 +139,7 @@ class Pool:
         self.allow_local_repos = allow_local_repos
         self.quota_checker = quota_checker
         self.models_lister = models_lister
+        self._models_cache: tuple[float, dict[str, str]] | None = None
         self.data = Path(data_dir)
         self.repos = self.data / "repos"
         self.worktrees = self.data / "worktrees"
@@ -173,6 +175,9 @@ class Pool:
         conn = self._db()
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
+        # Databases created before per-task models existed get the column added in place.
+        if "model" not in {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}:
+            conn.execute("ALTER TABLE tasks ADD COLUMN model TEXT")
         conn.close()
 
     def _sync_accounts(self) -> None:
@@ -227,6 +232,30 @@ class Pool:
             raise ValueError("model list is not available")
         ok, text = self.models_lister(self._agent_env(account_id))
         return {"account_id": account_id, "ok": ok, "text": text}
+
+    def model_catalog(self) -> dict[str, str]:
+        """Model id -> display name, as reported by `agy models` (cached 10 minutes). Empty if unavailable."""
+        cached = self._models_cache
+        if cached is not None and time.time() - cached[0] < 600:
+            return cached[1]
+        if self.models_lister is None or not self.accounts_cfg:
+            return {}
+        ok, text = self.models_lister(self._agent_env(next(iter(self.accounts_cfg))))
+        catalog = {}
+        if ok:
+            for line in text.splitlines():
+                parts = line.split("\t")
+                if len(parts) == 2 and parts[0].strip():
+                    catalog[parts[0].strip()] = parts[1].strip()
+        if catalog:
+            self._models_cache = (time.time(), catalog)
+        return catalog
+
+    def _check_model(self, model: str) -> None:
+        catalog = self.model_catalog()
+        # If the list cannot be fetched, let agy decide rather than blocking every task.
+        if catalog and model not in catalog:
+            raise ValueError(f"unknown model '{model}'. Available: {', '.join(catalog)}")
 
     def set_model(self, account_id: str, model: str | None) -> dict[str, Any]:
         """Pin a model for one account (None = agy default) and persist it to accounts.json."""
@@ -299,6 +328,7 @@ class Pool:
         allowed_files: list[str],
         base_branch: str = "main",
         test_cmd: str | None = None,
+        model: str | None = None,
     ) -> str:
         if role not in ROLES:
             raise ValueError(f"role must be one of {', '.join(ROLES)}")
@@ -308,6 +338,9 @@ class Pool:
             raise ValueError("repo must be an https:// URL")
         if not allowed_files or not all(isinstance(p, str) and p for p in allowed_files):
             raise ValueError("allowed_files must be a non-empty list of glob patterns")
+        model = (model or "").strip() or None
+        if model:
+            self._check_model(model)
         with self._repo_lock:
             repo_path = git_ops.ensure_repo(repo, self.repos, self.push_token)
             git_ops.check_branch(repo_path, base_branch)
@@ -315,9 +348,9 @@ class Pool:
         t = time.time()
         conn = self._db()
         conn.execute(
-            "INSERT INTO tasks (id, role, goal, repo, base_branch, allowed_files, test_cmd, status, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
-            (task_id, role, goal, repo, base_branch, json.dumps(allowed_files), test_cmd, t, t),
+            "INSERT INTO tasks (id, role, goal, repo, base_branch, allowed_files, test_cmd, model, status,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+            (task_id, role, goal, repo, base_branch, json.dumps(allowed_files), test_cmd, model, t, t),
         )
         conn.close()
         return task_id
@@ -421,12 +454,13 @@ class Pool:
         )
         self._exec("UPDATE tasks SET branch = ? WHERE id = ?", (branch, task_id))
 
+        model = task["model"] or self._model_for(account_id)  # the task's own model beats the account's
         res = await self.runner(
             prompt=build_prompt(task),
             workdir=wt,
             env=self._agent_env(account_id),
             timeout=TASK_TIMEOUT_S,
-            model=self._model_for(account_id),
+            model=model,
         )
         output = f"{res.stdout}\n{res.stderr}"
 
@@ -449,10 +483,10 @@ class Pool:
             })
 
         self._mark_ok(account_id)
-        await self._finish_success(task, account_id, extract_summary(res.stdout), wt, branch)
+        await self._finish_success(task, account_id, extract_summary(res.stdout), wt, branch, model)
 
     async def _finish_success(
-        self, task: dict[str, Any], account_id: str, summary: str, wt: Path, branch: str
+        self, task: dict[str, Any], account_id: str, summary: str, wt: Path, branch: str, model: str | None
     ) -> None:
         task_id, base = task["id"], task["base_branch"]
         changed, stats = await asyncio.to_thread(git_ops.stage_and_diff, wt, base)
@@ -493,7 +527,7 @@ class Pool:
             "pushed": pushed,
             "push_error": push_error,
             "account": account_id,
-            "model": self._model_for(account_id),
+            "model": model,
             "attempts": task["attempts"],
         }
         self._finish(task_id, "failed" if violations else "done", report)

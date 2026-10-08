@@ -34,6 +34,10 @@ TOOLS = [
                 "allowed_files": {"type": "array", "items": {"type": "string"}, "description": "glob patterns"},
                 "base_branch": {"type": "string", "default": "main"},
                 "test_cmd": {"type": "string", "description": "shell command run in the worktree"},
+                "model": {
+                    "type": "string",
+                    "description": "optional model id (see list_models); overrides the agent's own model for this task",
+                },
             },
             "required": ["role", "goal", "repo", "allowed_files"],
         },
@@ -52,6 +56,11 @@ TOOLS = [
         "name": "list_tasks",
         "description": "Recent tasks, newest first.",
         "inputSchema": {**_OBJ, "properties": {"limit": {"type": "integer", "default": 20}}},
+    },
+    {
+        "name": "list_models",
+        "description": "Model ids that can be passed as `model` to submit_task, with display names.",
+        "inputSchema": _OBJ,
     },
     {
         "name": "list_accounts",
@@ -77,6 +86,7 @@ def _call_tool(name: str, args: dict[str, Any]) -> Any:
             allowed_files=args["allowed_files"],
             base_branch=args.get("base_branch", "main"),
             test_cmd=args.get("test_cmd"),
+            model=args.get("model"),
         )
         return {"task_id": task_id, "status": "queued"}
     if name == "task_status":
@@ -93,6 +103,8 @@ def _call_tool(name: str, args: dict[str, Any]) -> Any:
         return _pool.list_tasks(int(args.get("limit", 20)))
     if name == "list_accounts":
         return _pool.list_accounts()
+    if name == "list_models":
+        return [{"id": k, "name": v} for k, v in _pool.model_catalog().items()]
     raise ValueError(f"unknown tool {name}")
 
 
@@ -136,7 +148,7 @@ def _task_summary(t: dict[str, Any]) -> dict[str, Any]:
     note = report.get("error") or report.get("last_error") or "; ".join(report.get("violations") or []) or None
     return {
         "id": t["id"], "role": t["role"], "status": t["status"], "goal": t["goal"], "repo": t["repo"],
-        "account_id": t["account_id"], "attempts": t["attempts"], "branch": t["branch"],
+        "account_id": t["account_id"], "attempts": t["attempts"], "branch": t["branch"], "model": t["model"],
         "created_at": t["created_at"], "updated_at": t["updated_at"],
         "pushed": report.get("pushed"), "tests_passed": tests.get("passed") if tests else None,
         "note": note,
