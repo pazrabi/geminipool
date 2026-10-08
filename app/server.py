@@ -216,6 +216,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, _pool.check_quota(match.group(1)))
             except ValueError as exc:
                 return self._json(404, {"error": str(exc)})
+        model_match = re.fullmatch(r"/api/accounts/([A-Za-z0-9_-]{1,32})/model", path)
+        if model_match:
+            if not self._authorized():
+                return self._json(401, {"error": "unauthorized"})
+            assert _pool is not None
+            try:
+                body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 10_000)) or b"{}")
+                model = body.get("model")
+                if model is not None and not isinstance(model, str):
+                    raise ValueError("model must be a string or null")
+                return self._json(200, _pool.set_model(model_match.group(1), model))
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
         if path != "/mcp":
             return self._send(404, b"not found", "text/plain")
         if not self._authorized():

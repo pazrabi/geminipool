@@ -228,6 +228,25 @@ class Pool:
         ok, text = self.models_lister(self._agent_env(account_id))
         return {"account_id": account_id, "ok": ok, "text": text}
 
+    def set_model(self, account_id: str, model: str | None) -> dict[str, Any]:
+        """Pin a model for one account (None = agy default) and persist it to accounts.json."""
+        if account_id not in self.accounts_cfg:
+            raise ValueError("unknown account")
+        if model:
+            listing = self.list_models(account_id)
+            known = {line.split("\t")[0].strip() for line in listing["text"].splitlines() if "\t" in line}
+            if not listing["ok"] or model not in known:
+                raise ValueError("unknown model")
+            self.accounts_cfg[account_id]["model"] = model
+        else:
+            self.accounts_cfg[account_id].pop("model", None)
+        path = self.data / "accounts.json"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(list(self.accounts_cfg.values()), indent=2, ensure_ascii=False))
+        tmp.chmod(0o600)
+        tmp.replace(path)
+        return {"account_id": account_id, "model": self._model_for(account_id)}
+
     def list_events(self, limit: int = 50) -> list[dict[str, Any]]:
         conn = self._db()
         rows = conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()

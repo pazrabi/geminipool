@@ -250,6 +250,17 @@ class PoolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.pool.list_models("nope")
 
+    def test_set_model_validates_persists_and_resets(self):
+        self.pool.models_lister = lambda env: (True, "gemini-a\tGemini A\nclaude-b\tClaude B")
+        self.pool.set_model("acc1", "claude-b")
+        self.assertEqual({a["id"]: a for a in self.pool.list_accounts()}["acc1"]["model"], "claude-b")
+        saved = json.loads((self.tmp / "data" / "accounts.json").read_text())
+        self.assertEqual({a["id"]: a.get("model") for a in saved}["acc1"], "claude-b")
+        with self.assertRaises(ValueError):
+            self.pool.set_model("acc1", "not-a-model")
+        self.pool.set_model("acc1", None)
+        self.assertIsNone({a["id"]: a for a in self.pool.list_accounts()}["acc1"]["model"])
+
     def test_restart_requeues_running_tasks(self):
         tid = self.submit()
         self.pool._claim_next()  # simulate a crash mid-run

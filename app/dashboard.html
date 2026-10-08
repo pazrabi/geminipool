@@ -59,6 +59,7 @@ a { color: var(--accent); }
 .kv > div:nth-child(odd) { color: var(--muted); }
 .event { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; margin-bottom: 8px; }
 .event .line { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
 .quota { margin-top: 8px; display: grid; gap: 6px; }
 .qrow { display: grid; grid-template-columns: 1fr 90px 40px; gap: 8px; align-items: center; font-size: 13px; }
 .qrow .qname { grid-column: 1 / -1; }
@@ -113,6 +114,7 @@ a { color: var(--accent); }
   "use strict";
   var KEY = "gemini-pool-token";
   var token = null, filter = "all", openTasks = {}, taskDetail = {}, quotaBusy = {}, quotaFresh = {}, data = null, timer = null, lastSig = "";
+  var modelLists = {}, modelLoading = {}, modelBusy = {}, modelErr = {};
 
   function store(v) { try { if (v === null) localStorage.removeItem(KEY); else localStorage.setItem(KEY, v); } catch (e) {} }
   function load() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
@@ -213,6 +215,44 @@ a { color: var(--accent); }
     });
   }
 
+  function modelRow(a) {
+    var row = el("div", "row"), list = modelLists[a.id];
+    row.appendChild(el("span", "muted", "Модель: "));
+    if (!list && !modelLoading[a.id]) loadModels(a.id);
+    var sel = el("select", ""), def = el("option", "", "по умолчанию (выбирает agy)");
+    def.value = ""; if (!a.model) def.selected = true; sel.appendChild(def);
+    var seen = false;
+    (list || []).forEach(function (m) {
+      var o = el("option", "", m.name); o.value = m.id; o.title = m.id;
+      if (m.id === a.model) { o.selected = true; seen = true; }
+      sel.appendChild(o);
+    });
+    if (a.model && !seen) { var extra = el("option", "", a.model); extra.value = a.model; extra.selected = true; sel.appendChild(extra); }
+    sel.disabled = !!modelBusy[a.id];
+    sel.onchange = function () { setModel(a.id, sel.value); };
+    row.appendChild(sel);
+    if (!list) row.appendChild(el("span", "muted", " загрузка списка…"));
+    if (modelErr[a.id]) row.appendChild(el("div", "err", modelErr[a.id]));
+    return row;
+  }
+
+  function loadModels(id) {
+    modelLoading[id] = true;
+    api("/api/accounts/" + encodeURIComponent(id) + "/models").then(function (r) {
+      modelLists[id] = !r.ok ? [] : r.text.split("\n").map(function (l) { return l.split("\t"); })
+        .filter(function (p) { return p.length === 2 && p[0].trim(); })
+        .map(function (p) { return { id: p[0].trim(), name: p[1].trim() }; });
+    }).catch(function () { modelLists[id] = []; })
+      .then(function () { modelLoading[id] = false; if (data) renderAccounts(); });
+  }
+
+  function setModel(id, value) {
+    modelBusy[id] = true; modelErr[id] = ""; renderAccounts();
+    api("/api/accounts/" + encodeURIComponent(id) + "/model", { method: "POST", body: JSON.stringify({ model: value || null }) })
+      .catch(function (e) { modelErr[id] = "Не удалось сменить модель: " + e.message; })
+      .then(function () { modelBusy[id] = false; lastSig = ""; refresh(); });
+  }
+
   function renderAccounts() {
     var box = document.getElementById("accounts"); box.textContent = "";
     if (!data.accounts.length) { box.appendChild(el("div", "empty", "Агентов нет")); return; }
@@ -225,6 +265,7 @@ a { color: var(--accent); }
       var info = el("div", "row muted");
       info.textContent = a.busy_task ? "Задача: " + a.busy_task : (a.last_used ? "Последняя работа: " + ago(a.last_used, data.now) : "Ещё не работал");
       card.appendChild(info);
+      card.appendChild(modelRow(a));
 
       if (a.last_error && (a.state !== "ok")) {
         card.appendChild(el("div", "row muted", "Последняя ошибка:")); card.appendChild(pre(a.last_error));
@@ -264,6 +305,7 @@ a { color: var(--accent); }
       s.textContent = t.branch + (r.pushed ? "" : " (на сервере, в GitHub не отправлена)"); return s;
     })() : "—");
     kv(grid, "Попыток", String(t.attempts));
+    if ("model" in r) kv(grid, "Модель", r.model || "по умолчанию (выбирает agy)");
     if (d) kv(grid, "Разрешённые файлы", (d.allowed_files || []).join(", "));
     if (d && d.test_cmd) kv(grid, "Команда тестов", d.test_cmd);
     if (r.tests) kv(grid, "Тесты", r.tests.passed ? "пройдены" : "не пройдены");
@@ -355,7 +397,8 @@ a { color: var(--accent); }
       // Rebuild the page only when something changed (or every 15 s for the countdowns), and never
       // while the user has text selected, so clicks and selections are not destroyed by a refresh.
       var sig = JSON.stringify([d.accounts, d.tasks, d.events, Math.floor(d.now / 15)]);
-      var selecting = String(window.getSelection ? window.getSelection() : "").length > 0;
+      var selecting = String(window.getSelection ? window.getSelection() : "").length > 0 ||
+        (document.activeElement && document.activeElement.tagName === "SELECT");
       var first = !data;
       if (sig === lastSig || (selecting && !first)) { showApp(); return; }
       lastSig = sig; data = d; showApp(); render();
