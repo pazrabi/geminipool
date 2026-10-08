@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DEFAULT_URL = "https://gemini-pool-production.up.railway.app"
+DEFAULT_URL = "https://193-41-86-92.sslip.io"
 DEFAULT_TOKEN_FILE = "~/projects/.gemini-pool-mcp-token"
 FINISHED = ("done", "failed")
 TASK_ID = re.compile(r"[0-9a-f]{12}")

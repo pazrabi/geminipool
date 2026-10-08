@@ -1,13 +1,14 @@
 # gemini-pool
 
-A pool of Gemini agents (Antigravity CLI, `agy`) on Railway. Claude hands it narrow development tasks over MCP;
+A pool of Gemini agents (Antigravity CLI, `agy`) on an Aéza VPS (`deploy/SETUP.md`). Claude hands it narrow development tasks over MCP;
 each task becomes a git branch `pool/<id>` plus a short report. Agents never merge or push to `main`.
 
 - `app/` — the service (Python stdlib only): dispatcher, `agy` executor, MCP server, OAuth server, dashboard
 - `tests/` — `python3 -m unittest discover -s tests` (fake agent, real local git, real HTTP; no quota is spent)
-- `Dockerfile`, `railway.toml` — deploy with `railway up`
+- `deploy/` — systemd unit, Caddyfile and setup notes for the server; `scripts/safe_deploy.sh` deploys
+- `Dockerfile`, `railway.toml` — the previous Railway deployment (kept as a fallback, no longer used)
 
-## Railway variables
+## Environment variables (`/etc/gemini-pool.env` on the server)
 
 | Variable | Purpose |
 |---|---|
@@ -16,13 +17,13 @@ each task becomes a git branch `pool/<id>` plus a short report. Agents never mer
 | `GIT_PUSH_TOKEN` | GitHub fine-grained token, Contents: read and write on the repositories the pool may push `pool/*` branches to |
 | `AGY_MODEL` | optional default model id for all agents |
 
-Volume `/data` holds the database, repositories, worktrees, agent profiles (the Google logins) and `accounts.json`.
+`POOL_DATA` (`/var/lib/gemini-pool`) holds the database, repositories, worktrees, agent profiles (the Google logins) and `accounts.json`.
 
 ## Agents
 
-`/data/accounts.json` (created from the dashboard when you pick a model) lists agents:
+`accounts.json` in `POOL_DATA` (created from the dashboard when you pick a model) lists agents:
 `[{"id": "acc1", "role": "developer", "model": "gemini-3.8-flash-high"}]`. Roles: `developer`, `reviewer`, `debugger`.
-Log an agent in once, in the container: `railway ssh --service gemini-pool -- env HOME=/data/profiles/acc1 agy`.
+Log an agent in once on the server: see `deploy/SETUP.md` (Google OAuth, kept alive in tmux).
 
 ## Connecting Claude
 

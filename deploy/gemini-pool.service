@@ -1,0 +1,21 @@
+[Unit]
+Description=Gemini agent pool
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pool
+Group=pool
+EnvironmentFile=/etc/gemini-pool.env
+Environment=PATH=/opt/pool-bin:/home/pool/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/pool
+WorkingDirectory=/opt/gemini-pool/app
+ExecStart=/usr/bin/python3 /opt/gemini-pool/app/main.py
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

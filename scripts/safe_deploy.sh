@@ -1,13 +1,16 @@
 #!/bin/bash
-# Deploy without interrupting running agent tasks: pause intake, wait until nothing runs, deploy, verify.
+# Deploy to the pool server without interrupting running agent tasks:
+# pause intake, wait until nothing runs, sync the code, restart the service, verify health.
 # The restart switches the pause off by itself, so the queue resumes with the new version.
 set -euo pipefail
 
-URL="${PUBLIC_URL:-https://gemini-pool-production.up.railway.app}"
+URL="${PUBLIC_URL:-https://193-41-86-92.sslip.io}"
+HOST="${POOL_SSH_HOST:-root@193.41.86.92}"
+KEY="${POOL_SSH_KEY:-$HOME/.ssh/aeza_pool}"
 TOKEN_FILE="${POOL_TOKEN_FILE:-$HOME/projects/.gemini-pool-mcp-token}"
 WAIT_S="${DRAIN_WAIT_SECONDS:-2100}"   # a task may run up to 30 minutes
-RAILWAY="${RAILWAY_BIN:-$(command -v railway || echo "$HOME/.railway/bin/railway")}"
 TOKEN="$(cat "$TOKEN_FILE")"
+SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes)
 
 api() { curl -fsS -m 30 -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$@"; }
 resume() { api -X POST -d '{"drain": false}' "$URL/api/drain" >/dev/null 2>&1 || true; }
@@ -28,9 +31,10 @@ while true; do
   sleep 15
 done
 
-echo "Nothing is running. Deploying..."
+echo "Nothing is running. Syncing code and restarting..."
 cd "$(dirname "$0")/.."
-"$RAILWAY" up --service gemini-pool --ci | tail -1
+rsync -az --delete -e "${SSH[*]}" --exclude '__pycache__' app scripts tests README.md deploy "$HOST:/opt/gemini-pool/"
+"${SSH[@]}" "$HOST" "systemctl restart gemini-pool"
 trap - ERR INT TERM
 
 for _ in $(seq 1 12); do
@@ -41,5 +45,5 @@ for _ in $(seq 1 12); do
     exit 0
   fi
 done
-echo "Deployed, but /health did not answer in time; check the Railway logs." >&2
+echo "Restarted, but /health did not answer in time; check: journalctl -u gemini-pool -n 50" >&2
 exit 1

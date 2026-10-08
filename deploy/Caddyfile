@@ -1,0 +1,4 @@
+193-41-86-92.sslip.io {
+	encode gzip
+	reverse_proxy 127.0.0.1:8080
+}

@@ -42,7 +42,9 @@ async def main() -> None:
         models_lister=executor.agy_models,
     )
     server.configure(pool, token, OAuth(pool.db_path, token))
-    httpd = ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8080"))), server.Handler)
+    # Railway needs 0.0.0.0; on a server behind a reverse proxy set POOL_BIND=127.0.0.1.
+    bind = os.environ.get("POOL_BIND", "0.0.0.0")
+    httpd = ThreadingHTTPServer((bind, int(os.environ.get("PORT", "8080"))), server.Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     logging.getLogger("main").info("gemini-pool started, accounts=%s", [a["id"] for a in pool.list_accounts()])
     await pool.run_forever()
