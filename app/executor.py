@@ -31,15 +31,32 @@ def agy_quota(env: dict[str, str]) -> tuple[bool, str]:
     return proc.returncode == 0, text[-4000:]
 
 
+def agy_models(env: dict[str, str]) -> tuple[bool, str]:
+    """List the models agy offers to this account (`agy models`). Blocking; returns (ok, output)."""
+    try:
+        proc = subprocess.run(
+            [AGY_BIN, "models"],
+            cwd=env["HOME"],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "agy did not answer within 60 seconds"
+    return proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}".strip()[-4000:]
+
+
 async def agy_runner(
     *,
     prompt: str,
     workdir: Path,
     env: dict[str, str],
     timeout: float,
+    model: str | None = None,
 ) -> RunResult:
     args = [AGY_BIN, "-p", prompt, "--output-format", "json", "--dangerously-skip-permissions"]
-    model = os.environ.get("AGY_MODEL")
     if model:
         args += ["--model", model]
     proc = await asyncio.create_subprocess_exec(

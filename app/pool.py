@@ -133,9 +133,11 @@ class Pool:
         push_token: str | None = None,
         allow_local_repos: bool = False,
         quota_checker: Callable[[dict[str, str]], tuple[bool, str]] | None = None,
+        models_lister: Callable[[dict[str, str]], tuple[bool, str]] | None = None,
     ):
         self.allow_local_repos = allow_local_repos
         self.quota_checker = quota_checker
+        self.models_lister = models_lister
         self.data = Path(data_dir)
         self.repos = self.data / "repos"
         self.worktrees = self.data / "worktrees"
@@ -208,7 +210,23 @@ class Pool:
             " FROM accounts a LEFT JOIN quota q ON q.account_id = a.id ORDER BY a.id"
         ).fetchall()
         conn.close()
-        return [dict(r) for r in rows]
+        accounts = [dict(r) for r in rows]
+        for acc in accounts:
+            acc["model"] = self._model_for(acc["id"])
+        return accounts
+
+    def _model_for(self, account_id: str) -> str | None:
+        """Model pinned for this account (accounts.json "model"), else the global AGY_MODEL, else None = agy default."""
+        return self.accounts_cfg.get(account_id, {}).get("model") or os.environ.get("AGY_MODEL") or None
+
+    def list_models(self, account_id: str) -> dict[str, Any]:
+        """Models agy offers to this account. Blocking: call from a worker thread."""
+        if account_id not in self.accounts_cfg:
+            raise ValueError("unknown account")
+        if self.models_lister is None:
+            raise ValueError("model list is not available")
+        ok, text = self.models_lister(self._agent_env(account_id))
+        return {"account_id": account_id, "ok": ok, "text": text}
 
     def list_events(self, limit: int = 50) -> list[dict[str, Any]]:
         conn = self._db()
@@ -389,6 +407,7 @@ class Pool:
             workdir=wt,
             env=self._agent_env(account_id),
             timeout=TASK_TIMEOUT_S,
+            model=self._model_for(account_id),
         )
         output = f"{res.stdout}\n{res.stderr}"
 
@@ -455,6 +474,7 @@ class Pool:
             "pushed": pushed,
             "push_error": push_error,
             "account": account_id,
+            "model": self._model_for(account_id),
             "attempts": task["attempts"],
         }
         self._finish(task_id, "failed" if violations else "done", report)

@@ -193,6 +193,12 @@ class Handler(BaseHTTPRequestHandler):
             assert _pool is not None
             if path == "/api/overview":
                 return self._json(200, overview(_pool))
+            models = re.fullmatch(r"/api/accounts/([A-Za-z0-9_-]{1,32})/models", path)
+            if models:
+                try:
+                    return self._json(200, _pool.list_models(models.group(1)))
+                except ValueError as exc:
+                    return self._json(404, {"error": str(exc)})
             match = re.fullmatch(r"/api/tasks/([0-9a-f]{12})", path)
             if match:
                 task = _pool.get_task(match.group(1))

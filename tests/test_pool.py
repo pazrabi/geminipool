@@ -27,8 +27,8 @@ class FakeAgent:
         self.script = []
         self.calls = []
 
-    async def __call__(self, *, prompt, workdir, env, timeout):
-        self.calls.append({"workdir": Path(workdir), "env": env})
+    async def __call__(self, *, prompt, workdir, env, timeout, model=None):
+        self.calls.append({"workdir": Path(workdir), "env": env, "model": model})
         action = self.script.pop(0) if self.script else (lambda wd: RunResult(0, json.dumps({"response": "ok"}), ""))
         return action(Path(workdir))
 
@@ -226,6 +226,29 @@ class PoolTests(unittest.TestCase):
         task = data["tasks"][0]
         self.assertNotIn("report", task)  # the list stays light; the full report is fetched per task
         self.assertIn("goal", task)
+
+    def test_account_model_is_passed_to_the_agent_and_reported(self):
+        accounts = [{"id": "acc1", "role": "developer", "model": "claude-x"}]
+        pool = Pool(self.tmp / "data2", runner=self.agent, accounts=accounts, allow_local_repos=True)
+        self.agent.script = [write_file("src/x.py")]
+        tid = pool.submit("developer", "g", self.url, ["src/*.py"])
+
+        async def go():
+            await pool.dispatch_once()
+            await asyncio.gather(*list(pool.running))
+        asyncio.run(go())
+        self.assertEqual(self.agent.calls[-1]["model"], "claude-x")
+        self.assertEqual(pool.get_task(tid)["report"]["model"], "claude-x")
+        self.assertEqual(pool.list_accounts()[0]["model"], "claude-x")
+
+    def test_account_without_model_uses_agy_default(self):
+        self.assertIsNone({a["id"]: a for a in self.pool.list_accounts()}["acc1"]["model"])
+
+    def test_list_models(self):
+        self.pool.models_lister = lambda env: (True, "gemini-x\nclaude-y")
+        self.assertEqual(self.pool.list_models("acc1")["text"], "gemini-x\nclaude-y")
+        with self.assertRaises(ValueError):
+            self.pool.list_models("nope")
 
     def test_restart_requeues_running_tasks(self):
         tid = self.submit()

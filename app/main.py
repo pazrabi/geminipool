@@ -34,6 +34,7 @@ async def main() -> None:
         accounts=load_accounts(data),
         push_token=os.environ.get("GIT_PUSH_TOKEN") or None,
         quota_checker=executor.agy_quota,
+        models_lister=executor.agy_models,
     )
     server.configure(pool, token)
     httpd = ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8080"))), server.Handler)
