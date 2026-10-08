@@ -162,6 +162,31 @@ class PoolTests(unittest.TestCase):
         states = {a["id"]: a for a in self.pool.list_accounts()}
         self.assertEqual(states["acc1"]["state"], "auth_error")
 
+    def test_account_google_refuses_is_set_aside_and_its_task_moves_on(self):
+        refusal = "error: Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account."
+        self.agent.script = [failing(refusal), write_file("src/x.py")]
+        tid = self.submit()
+        self.run_pool()
+        t = self.pool.get_task(tid)
+        self.assertEqual((t["status"], t["account_id"]), ("done", "acc2"), t["report"])
+        self.assertEqual({a["id"]: a["state"] for a in self.pool.list_accounts()}["acc1"], "auth_error")
+
+    def test_failed_limit_check_sets_an_ineligible_account_aside_and_a_good_one_restores_it(self):
+        self.pool.quota_checker = lambda env: (False, "error: Eligibility check failed: not eligible. Verify your account")
+        self.pool.check_quota("acc1")
+        self.assertEqual(self.pool.accounts_state("acc1"), "auth_error")
+        tid = self.submit()
+        self.run_pool()
+        self.assertEqual(self.pool.get_task(tid)["account_id"], "acc2")  # acc1 got nothing
+        self.pool.quota_checker = lambda env: (True, "Gemini Models\tWeekly Limit Remaining\t90%\t2026-10-15T00:00:00Z")
+        self.pool.check_quota("acc1")
+        self.assertEqual(self.pool.accounts_state("acc1"), "ok")
+
+    def test_a_failed_check_for_another_reason_does_not_ban_the_account(self):
+        self.pool.quota_checker = lambda env: (False, "agy did not answer within 90 seconds")
+        self.pool.check_quota("acc1")
+        self.assertEqual(self.pool.accounts_state("acc1"), "ok")
+
     def test_task_waits_when_every_matching_account_is_paused(self):
         # Two developer accounts, both hit the quota: the task stays queued until a pause ends.
         self.agent.script = [failing("429 quota")] * 2

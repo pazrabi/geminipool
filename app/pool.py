@@ -31,7 +31,10 @@ TASK_TIMEOUT_S = int(os.environ.get("POOL_TASK_TIMEOUT", "1800"))
 TEST_TIMEOUT_S = int(os.environ.get("POOL_TEST_TIMEOUT", "900"))
 
 QUOTA_RE = re.compile(r"RESOURCE_EXHAUSTED|\b429\b|quota|rate.?limit|too many requests", re.I)
-AUTH_RE = re.compile(r"\b401\b|UNAUTHENTICATED|API key not valid|PERMISSION_DENIED|no auth", re.I)
+AUTH_RE = re.compile(
+    r"\b401\b|UNAUTHENTICATED|API key not valid|PERMISSION_DENIED|no auth|not eligible|Verify your account|Eligibility check failed",
+    re.I,
+)
 NETWORK_RE = re.compile(r"ECONNRESET|ETIMEDOUT|ENOTFOUND|fetch failed|socket hang up", re.I)
 
 ROLE_TEXT = {
@@ -416,7 +419,19 @@ class Pool:
         )
         if not ok:
             self._event("quota_check_failed", account_id, None, text)
+            if AUTH_RE.search(text):  # no login, or Google refuses the account: it must not be given tasks
+                self._pause(account_id, "auth_error", None, text)
+        elif self.accounts_state(account_id) == "auth_error":
+            self._mark_ok(account_id)
         return {"account_id": account_id, "checked_at": checked_at, "ok": ok, "text": text}
+
+    def accounts_state(self, account_id: str) -> str | None:
+        conn = self._db()
+        try:
+            row = conn.execute("SELECT state FROM accounts WHERE id = ?", (account_id,)).fetchone()
+        finally:
+            conn.close()
+        return row["state"] if row else None
 
     @staticmethod
     def _task_dict(row: sqlite3.Row) -> dict[str, Any]:

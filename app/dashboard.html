@@ -228,7 +228,10 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
   function accountState(a, now) {
     if (!a.enabled) return { cls: "s-idle", text: "Выключен" };
     if (a.logged_in === false) return { cls: "s-bad", text: "Нужен вход" };
-    if (a.state === "auth_error") return { cls: "s-bad", text: "Нужен вход" };
+    if (a.state === "auth_error") {
+      var refused = /not eligible|Verify your account|Eligibility/i.test(a.last_error || "");
+      return { cls: "s-bad", text: refused ? "Нужно подтвердить аккаунт в Google" : "Нужен вход" };
+    }
     if (a.paused_until && a.paused_until > now) return { cls: "s-wait", text: "Лимит, пауза ещё " + span(a.paused_until - now) };
     if (a.busy_task) return { cls: "s-run", text: "Выполняет задачу" };
     return { cls: "s-ok", text: "Свободен" };
@@ -304,6 +307,9 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
         card.appendChild(pre("~/projects/gemini-pool/scripts/add_account.sh " + a.id));
       }
 
+      if (a.state === "auth_error" && /not eligible|Verify your account|Eligibility/i.test(a.last_error || "")) {
+        card.appendChild(el("div", "row muted", "Google не допускает этот аккаунт, пока его не подтвердят. Откройте ссылку из результата проверки лимита ниже, подтвердите аккаунт и нажмите «Проверить лимит» ещё раз: если проверка пройдёт, агент заработает сам."));
+      }
       if (a.last_error && (a.state !== "ok")) {
         card.appendChild(el("div", "row muted", "Последняя ошибка:")); card.appendChild(pre(a.last_error));
       }

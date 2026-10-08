@@ -132,9 +132,19 @@ fi
 
 # 8. Check that the account really works.
 echo "Checking the account..."
-api -X POST "$URL/api/accounts/$ID/quota" | python3 -c '
+result=$(api -X POST "$URL/api/accounts/$ID/quota")
+if python3 -c '
 import json, sys
-d = json.load(sys.stdin)
-print("Limits:" if d.get("ok") else "Check failed:")
-print(d.get("text") or d)'
-echo "Agent $ID is ready: the pool will give it tasks automatically."
+d = json.loads(sys.argv[1])
+print("Limits:" if d.get("ok") else "The check failed:")
+print(d.get("text") or d)
+sys.exit(0 if d.get("ok") else 1)' "$result"; then
+  echo "Agent $ID is ready: the pool will give it tasks automatically."
+else
+  echo
+  echo "The login was saved, but the account is NOT usable yet, so the pool will not give it tasks."
+  echo "If the text above has a link, open it and verify the account in Google, then run this again:"
+  echo "    scripts/add_account.sh $ID"
+  echo "(it skips the login and only repeats this check)."
+  exit 1
+fi
