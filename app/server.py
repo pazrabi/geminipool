@@ -173,6 +173,7 @@ def overview(pool: Pool) -> dict[str, Any]:
         "tasks": [_task_summary(t) for t in tasks],
         "events": pool.list_events(50),
         "counts": counts,
+        **pool.maintenance_status(),
     }
 
 
@@ -397,6 +398,18 @@ button{{font:inherit;padding:10px 18px;cursor:pointer}}.err{{color:#c8382d}}.mon
                 return self._json(200, _pool.check_quota(match.group(1)))
             except ValueError as exc:
                 return self._json(404, {"error": str(exc)})
+        if path == "/api/drain":
+            if not self._authorized():
+                return self._json(401, {"error": "unauthorized"})
+            assert _pool is not None
+            try:
+                body = json.loads(self._read_body(10_000) or b"{}")
+                if not isinstance(body, dict) or not isinstance(body.get("drain"), bool):
+                    raise ValueError('body must be {"drain": true|false}')
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
+            log.info("maintenance mode %s", "on" if body["drain"] else "off")
+            return self._json(200, _pool.set_draining(body["drain"]))
         model_match = re.fullmatch(r"/api/accounts/([A-Za-z0-9_-]{1,32})/model", path)
         if model_match:
             if not self._authorized():

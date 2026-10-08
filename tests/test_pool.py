@@ -301,6 +301,27 @@ class PoolTests(unittest.TestCase):
         tid = pool.submit("developer", "g", self.url, ["src/*.py"], model=None)
         self.assertIsNone(pool.get_task(tid)["model"])
 
+    def test_draining_stops_new_tasks_but_keeps_the_queue(self):
+        tid = self.submit()
+        self.pool.set_draining(True)
+        self.assertIsNone(self.pool._claim_next())
+        self.assertEqual(self.pool.get_task(tid)["status"], "queued")
+        status = self.pool.maintenance_status()
+        self.assertEqual((status["draining"], status["running"], status["safe_to_deploy"]), (True, 0, True))
+        self.pool.set_draining(False)
+        self.assertIsNotNone(self.pool._claim_next())
+
+    def test_not_safe_to_deploy_while_a_task_runs(self):
+        self.submit()
+        self.pool._claim_next()
+        status = self.pool.set_draining(True)
+        self.assertEqual((status["running"], status["safe_to_deploy"]), (1, False))
+
+    def test_a_restart_switches_maintenance_mode_off(self):
+        self.pool.set_draining(True)
+        restarted = Pool(self.tmp / "data", runner=self.agent, accounts=self.accounts, allow_local_repos=True)
+        self.assertFalse(restarted.draining)
+
     def test_start_time_is_recorded_when_a_task_is_claimed(self):
         tid = self.submit()
         self.assertIsNone(self.pool.get_task(tid)["started_at"])  # waiting in the queue

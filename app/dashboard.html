@@ -37,6 +37,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .s-wait, .s-queued { color: var(--wait); background: var(--wait-bg); }
 .s-bad, .s-failed { color: var(--bad); background: var(--bad-bg); }
 .s-idle { color: var(--idle); background: var(--idle-bg); }
+.banner { margin-top: 14px; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--wait); color: var(--wait); background: var(--wait-bg); font-weight: 600; }
+.banner.safe { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
 .counters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 16px; }
 .counter { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
 .counter b { display: block; font-size: 24px; }
@@ -97,8 +99,10 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
     <span id="conn" class="pill s-idle">подключение…</span>
     <span class="spacer"></span>
     <span class="muted" id="updated"></span>
+    <button id="drain" title="Не запускать новые задачи, чтобы безопасно обновить сервис">Пауза приёма задач</button>
     <button id="logout">Выйти</button>
   </header>
+  <div id="banner" class="banner" hidden></div>
   <div class="counters" id="counters"></div>
   <h2>Агенты</h2>
   <div class="grid" id="accounts"></div>
@@ -400,7 +404,27 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
     });
   }
 
+  function renderMaintenance() {
+    var banner = document.getElementById("banner"), btn = document.getElementById("drain");
+    btn.textContent = data.draining ? "Возобновить приём" : "Пауза приёма задач";
+    banner.hidden = !data.draining;
+    if (!data.draining) return;
+    banner.className = "banner" + (data.safe_to_deploy ? " safe" : "");
+    banner.textContent = data.safe_to_deploy
+      ? "Режим обслуживания: ничего не выполняется, сервис можно безопасно обновлять. Новые задачи ждут в очереди."
+      : "Режим обслуживания: новые задачи не запускаются. Ещё выполняется задач: " + data.running +
+        ". Обновлять сервис можно, когда их станет 0.";
+  }
+
+  function toggleDrain() {
+    var btn = document.getElementById("drain"); btn.disabled = true;
+    api("/api/drain", { method: "POST", body: JSON.stringify({ drain: !(data && data.draining) }) })
+      .catch(function (e) { if (e.auth) showLogin("Токен не подошёл"); })
+      .then(function () { btn.disabled = false; lastSig = ""; refresh(); });
+  }
+
   function render() {
+    renderMaintenance();
     var c = document.getElementById("conn"); c.className = "pill s-ok"; c.textContent = "онлайн";
     document.getElementById("updated").textContent = "обновлено " + clock(data.now);
     renderCounters(); renderAccounts(); renderTasks(); renderEvents();
@@ -428,7 +452,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
       clockOffset = d.now - Date.now() / 1000;
       // Rebuild the page only when something changed (or every 15 s for the countdowns), and never
       // while the user has text selected, so clicks and selections are not destroyed by a refresh.
-      var sig = JSON.stringify([d.accounts, d.tasks, d.events, Math.floor(d.now / 15)]);
+      var sig = JSON.stringify([d.accounts, d.tasks, d.events, d.draining, d.running, Math.floor(d.now / 15)]);
       var selecting = String(window.getSelection ? window.getSelection() : "").length > 0 ||
         (document.activeElement && document.activeElement.tagName === "SELECT");
       var first = !data;
@@ -449,6 +473,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
     document.getElementById("token").value = "";
     store(token); refresh();
   };
+  document.getElementById("drain").onclick = toggleDrain;
   document.getElementById("logout").onclick = function () { store(null); token = null; data = null; lastSig = ""; showLogin(""); };
   document.addEventListener("visibilitychange", function () { if (!document.hidden && token) refresh(); });
 

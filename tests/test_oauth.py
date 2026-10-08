@@ -155,6 +155,19 @@ class OAuthHTTPTests(unittest.TestCase):
         status, _, _ = self.call("GET", "/api/overview", headers={"Authorization": "Bearer " + access})
         self.assertEqual(status, 401)
 
+    def test_drain_endpoint_needs_the_pool_token_and_toggles(self):
+        auth = {"Authorization": "Bearer " + POOL_TOKEN, "Content-Type": "application/json"}
+        status, _, _ = self.call("POST", "/api/drain", '{"drain": true}', {"Content-Type": "application/json"})
+        self.assertEqual(status, 401)
+        status, _, data = self.call("POST", "/api/drain", '{"drain": true}', auth)
+        self.assertEqual((status, json.loads(data)["safe_to_deploy"]), (200, True))
+        _, _, data = self.call("GET", "/api/overview", headers=auth)
+        self.assertTrue(json.loads(data)["draining"])
+        status, _, _ = self.call("POST", "/api/drain", '{"drain": "yes"}', auth)
+        self.assertEqual(status, 400)
+        status, _, data = self.call("POST", "/api/drain", '{"drain": false}', auth)
+        self.assertFalse(json.loads(data)["draining"])
+
     def test_wrong_owner_token_issues_no_code(self):
         client = self.register()
         status, hdrs, body = self.authorize(client, pkce()[1], token="wrong")

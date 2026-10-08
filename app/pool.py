@@ -141,6 +141,9 @@ class Pool:
         self.quota_checker = quota_checker
         self.models_lister = models_lister
         self._models_cache: tuple[float, dict[str, str]] | None = None
+        # Maintenance mode: no new task is started while it is on. It lives in memory only, so the restart
+        # that a deploy causes switches it off again by itself and the queue never stays stuck.
+        self.draining = False
         self.data = Path(data_dir)
         self.repos = self.data / "repos"
         self.worktrees = self.data / "worktrees"
@@ -363,7 +366,21 @@ class Pool:
 
     # ---- scheduling ----------------------------------------------------
 
+    def set_draining(self, draining: bool) -> dict[str, Any]:
+        self.draining = bool(draining)
+        return self.maintenance_status()
+
+    def maintenance_status(self) -> dict[str, Any]:
+        conn = self._db()
+        try:
+            running = conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'running'").fetchone()[0]
+        finally:
+            conn.close()
+        return {"draining": self.draining, "running": running, "safe_to_deploy": self.draining and running == 0}
+
     def _claim_next(self) -> tuple[str, str] | None:
+        if self.draining:
+            return None
         conn = self._db()
         try:
             conn.execute("BEGIN IMMEDIATE")
