@@ -39,6 +39,8 @@ async def main() -> None:
         accounts=load_accounts(data),
         push_token=os.environ.get("GIT_PUSH_TOKEN") or None,
         quota_checker=executor.agy_quota,
+        require_login=True,
+        max_concurrent=int(os.environ.get("POOL_MAX_CONCURRENT", "0")),
         models_lister=executor.agy_models,
     )
     server.configure(pool, token, OAuth(pool.db_path, token))

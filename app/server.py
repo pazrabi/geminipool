@@ -416,6 +416,22 @@ button{{font:inherit;padding:10px 18px;cursor:pointer}}.err{{color:#c8382d}}.mon
                 return self._json(200, _pool.check_quota(match.group(1)))
             except ValueError as exc:
                 return self._json(404, {"error": str(exc)})
+        if path == "/api/accounts" or re.fullmatch(r"/api/accounts/([A-Za-z0-9_-]{1,32})/enabled", path):
+            if not self._authorized():
+                return self._json(401, {"error": "unauthorized"})
+            assert _pool is not None
+            try:
+                body = json.loads(self._read_body(10_000) or b"{}")
+                if not isinstance(body, dict):
+                    raise ValueError("body must be a JSON object")
+                if path == "/api/accounts":
+                    return self._json(201, _pool.add_account(str(body.get("id", "")), str(body.get("role", "developer"))))
+                if not isinstance(body.get("enabled"), bool):
+                    raise ValueError('body must be {"enabled": true|false}')
+                account_id = path.split("/")[3]
+                return self._json(200, _pool.set_account_enabled(account_id, body["enabled"]))
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
         recover = re.fullmatch(r"/api/tasks/([0-9a-f]{12})/recover", path)
         if recover:
             if not self._authorized():
@@ -465,3 +481,16 @@ button{{font:inherit;padding:10px 18px;cursor:pointer}}.err{{color:#c8382d}}.mon
         if resp is None:
             return self._send(202, b"")
         self._json(200, resp)
+
+    def do_DELETE(self) -> None:
+        match = re.fullmatch(r"/api/accounts/([A-Za-z0-9_-]{1,32})", self.path.split("?", 1)[0])
+        if not match:
+            return self._send(404, b"not found", "text/plain")
+        if not self._authorized():
+            return self._json(401, {"error": "unauthorized"})
+        assert _pool is not None
+        try:
+            _pool.remove_account(match.group(1))
+        except ValueError as exc:
+            return self._json(400, {"error": str(exc)})
+        self._json(200, {"removed": match.group(1)})

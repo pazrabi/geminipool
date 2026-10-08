@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import sqlite3
 import threading
@@ -137,7 +138,14 @@ class Pool:
         allow_local_repos: bool = False,
         quota_checker: Callable[[dict[str, str]], tuple[bool, str]] | None = None,
         models_lister: Callable[[dict[str, str]], tuple[bool, str]] | None = None,
+        require_login: bool = False,
+        max_concurrent: int = 0,
     ):
+        # require_login: an account without an agy login is not given tasks (it would only fail them).
+        # max_concurrent: cap on tasks running at once, to protect a small server; 0 means no cap.
+        self.require_login = require_login
+        self.max_concurrent = max_concurrent
+        self._cfg_lock = threading.Lock()
         self.allow_local_repos = allow_local_repos
         self.quota_checker = quota_checker
         self.models_lister = models_lister
@@ -224,7 +232,10 @@ class Pool:
         conn = self._db()
         for acc_id, cfg in self.accounts_cfg.items():
             conn.execute("INSERT OR IGNORE INTO accounts (id, role) VALUES (?, ?)", (acc_id, cfg["role"]))
-            conn.execute("UPDATE accounts SET role = ?, enabled = 1 WHERE id = ?", (cfg["role"], acc_id))
+            conn.execute(
+                "UPDATE accounts SET role = ?, enabled = ? WHERE id = ?",
+                (cfg["role"], int(cfg.get("enabled", True)), acc_id),
+            )
         placeholders = ",".join("?" * len(self.accounts_cfg)) or "''"
         conn.execute(f"UPDATE accounts SET enabled = 0 WHERE id NOT IN ({placeholders})", tuple(self.accounts_cfg))
         conn.close()
@@ -258,7 +269,63 @@ class Pool:
         accounts = [dict(r) for r in rows]
         for acc in accounts:
             acc["model"] = self._model_for(acc["id"])
+            acc["logged_in"] = self.login_present(acc["id"])
         return accounts
+
+    # ---- account management ---------------------------------------------
+
+    def login_present(self, account_id: str) -> bool:
+        """True once agy has stored a Google login in the account's profile."""
+        return (self.profiles / account_id / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").is_file()
+
+    def _save_accounts(self) -> None:
+        path = self.data / "accounts.json"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(list(self.accounts_cfg.values()), indent=2, ensure_ascii=False))
+        tmp.chmod(0o600)
+        tmp.replace(path)
+
+    def add_account(self, account_id: str, role: str = "developer") -> dict[str, Any]:
+        """Register a new agent live. It takes no tasks until its Google login is done (see scripts/add_account.sh)."""
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,15}", account_id or ""):
+            raise ValueError("id must be 1-16 characters: lowercase letters, digits, - or _, starting with a letter")
+        if role not in ROLES:
+            raise ValueError(f"role must be one of {', '.join(ROLES)}")
+        with self._cfg_lock:
+            if account_id in self.accounts_cfg:
+                raise ValueError(f"account {account_id} already exists")
+            self.accounts_cfg[account_id] = {"id": account_id, "role": role}
+            (self.profiles / account_id).mkdir(parents=True, exist_ok=True)
+            self._save_accounts()
+            self._sync_accounts()
+        return next(a for a in self.list_accounts() if a["id"] == account_id)
+
+    def set_account_enabled(self, account_id: str, enabled: bool) -> dict[str, Any]:
+        with self._cfg_lock:
+            if account_id not in self.accounts_cfg:
+                raise ValueError("unknown account")
+            self.accounts_cfg[account_id]["enabled"] = bool(enabled)
+            self._save_accounts()
+            self._sync_accounts()
+        return next(a for a in self.list_accounts() if a["id"] == account_id)
+
+    def remove_account(self, account_id: str) -> None:
+        """Forget an agent and delete its profile (its Google login). Refused while it is working."""
+        with self._cfg_lock:
+            if account_id not in self.accounts_cfg:
+                raise ValueError("unknown account")
+            conn = self._db()
+            try:
+                row = conn.execute("SELECT busy_task FROM accounts WHERE id = ?", (account_id,)).fetchone()
+                if row is not None and row["busy_task"]:
+                    raise ValueError("the account is running a task; wait for it to finish")
+                conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+                conn.execute("DELETE FROM quota WHERE account_id = ?", (account_id,))
+            finally:
+                conn.close()
+            del self.accounts_cfg[account_id]
+            self._save_accounts()
+            shutil.rmtree(self.profiles / account_id, ignore_errors=True)
 
     def _model_for(self, account_id: str) -> str | None:
         """Model pinned for this account (accounts.json "model"), else the global AGY_MODEL, else None = agy default."""
@@ -312,11 +379,8 @@ class Pool:
             self.accounts_cfg[account_id]["model"] = model
         else:
             self.accounts_cfg[account_id].pop("model", None)
-        path = self.data / "accounts.json"
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(list(self.accounts_cfg.values()), indent=2, ensure_ascii=False))
-        tmp.chmod(0o600)
-        tmp.replace(path)
+        with self._cfg_lock:
+            self._save_accounts()
         return {"account_id": account_id, "model": self._model_for(account_id)}
 
     def list_events(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -416,20 +480,30 @@ class Pool:
     def _claim_next(self) -> tuple[str, str] | None:
         if self.draining or not self._disk_ok():
             return None
+        usable = [a for a in list(self.accounts_cfg) if not self.require_login or self.login_present(a)]
+        if not usable:
+            return None
         conn = self._db()
         try:
             conn.execute("BEGIN IMMEDIATE")
             t = time.time()
+            if self.max_concurrent:
+                busy = conn.execute("SELECT COUNT(*) FROM accounts WHERE busy_task IS NOT NULL").fetchone()[0]
+                if busy >= self.max_concurrent:
+                    conn.execute("COMMIT")
+                    return None
             tasks = conn.execute(
                 "SELECT id, role FROM tasks WHERE status = 'queued' AND not_before <= ? ORDER BY created_at",
                 (t,),
             ).fetchall()
+            marks = ",".join("?" * len(usable))
             for task in tasks:
                 acc = conn.execute(
                     "SELECT id FROM accounts WHERE enabled = 1 AND role = ? AND busy_task IS NULL"
+                    f" AND id IN ({marks})"
                     " AND state != 'auth_error' AND (paused_until IS NULL OR paused_until <= ?)"
                     " ORDER BY last_used LIMIT 1",
-                    (task["role"], t),
+                    (task["role"], *usable, t),
                 ).fetchone()
                 if acc is None:
                     continue

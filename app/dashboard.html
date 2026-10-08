@@ -62,6 +62,10 @@ a { color: var(--accent); }
 .kv > div:nth-child(odd) { color: var(--muted); }
 .event { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; margin-bottom: 8px; }
 .event .line { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+input[aria-label] { font: inherit; width: 8em; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+.card.add { border-style: dashed; }
+.ops button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+.ops { display: flex; gap: 8px; }
 select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
 .quota { margin-top: 8px; display: grid; gap: 6px; }
 .qrow { display: grid; grid-template-columns: 1fr 90px 40px; gap: 8px; align-items: center; font-size: 13px; }
@@ -119,7 +123,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
   "use strict";
   var KEY = "gemini-pool-token";
   var token = null, filter = "all", openTasks = {}, taskDetail = {}, quotaBusy = {}, quotaFresh = {}, data = null, timer = null, lastSig = "";
-  var modelLists = {}, modelLoading = {}, modelBusy = {}, modelErr = {}, clockOffset = 0, recovering = {};
+  var modelLists = {}, modelLoading = {}, modelBusy = {}, modelErr = {}, clockOffset = 0, recovering = {}, addOpen = false, addErr = "";
 
   function store(v) { try { if (v === null) localStorage.removeItem(KEY); else localStorage.setItem(KEY, v); } catch (e) {} }
   function load() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
@@ -223,6 +227,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
 
   function accountState(a, now) {
     if (!a.enabled) return { cls: "s-idle", text: "Выключен" };
+    if (a.logged_in === false) return { cls: "s-bad", text: "Нужен вход" };
     if (a.state === "auth_error") return { cls: "s-bad", text: "Нужен вход" };
     if (a.paused_until && a.paused_until > now) return { cls: "s-wait", text: "Лимит, пауза ещё " + span(a.paused_until - now) };
     if (a.busy_task) return { cls: "s-run", text: "Выполняет задачу" };
@@ -276,7 +281,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
 
   function renderAccounts() {
     var box = document.getElementById("accounts"); box.textContent = "";
-    if (!data.accounts.length) { box.appendChild(el("div", "empty", "Агентов нет")); return; }
+    if (!data.accounts.length) { box.appendChild(el("div", "empty", "Агентов нет")); box.appendChild(addAgentCard()); return; }
     data.accounts.forEach(function (a) {
       var st = accountState(a, data.now), card = el("div", "card");
       var top = el("div", "top");
@@ -294,6 +299,11 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
       card.appendChild(info);
       card.appendChild(modelRow(a));
 
+      if (a.logged_in === false) {
+        card.appendChild(el("div", "row muted", "Агент не войдёт в задачи, пока не выполнен вход в Google. Выполните на вашем Mac:"));
+        card.appendChild(pre("~/projects/gemini-pool/scripts/add_account.sh " + a.id));
+      }
+
       if (a.last_error && (a.state !== "ok")) {
         card.appendChild(el("div", "row muted", "Последняя ошибка:")); card.appendChild(pre(a.last_error));
       }
@@ -309,8 +319,76 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
         q.appendChild((res.ok && quotaView(res.text)) || linkified(res.text || "(пустой ответ)"));
       }
       card.appendChild(q);
+
+      var ops = el("div", "row ops");
+      var toggle = el("button", "", a.enabled ? "Выключить" : "Включить");
+      toggle.onclick = function () { setEnabled(a.id, !a.enabled); };
+      ops.appendChild(toggle);
+      var del = el("button", "danger", "Удалить");
+      del.disabled = !!a.busy_task;
+      del.title = a.busy_task ? "Агент сейчас работает" : "Удалить агента вместе с его входом в Google";
+      del.onclick = function () {
+        if (confirm("Удалить агента " + a.id + "? Его вход в Google будет стёрт, для возврата нужно войти заново.")) removeAccount(a.id);
+      };
+      ops.appendChild(del);
+      card.appendChild(ops);
       box.appendChild(card);
     });
+    box.appendChild(addAgentCard());
+  }
+
+  function nextAccountId() {
+    var taken = {}; data.accounts.forEach(function (a) { taken[a.id] = true; });
+    for (var n = 1; n < 100; n++) if (!taken["acc" + n]) return "acc" + n;
+    return "";
+  }
+
+  function addAgentCard() {
+    var card = el("div", "card add");
+    if (!addOpen) {
+      var open = el("button", "primary", "+ Добавить агента");
+      open.onclick = function () { addOpen = true; addErr = ""; renderAccounts(); };
+      card.appendChild(open);
+      card.appendChild(el("div", "row muted", "Новый Google-аккаунт для пула. После добавления нужно один раз войти в него (команда появится в карточке)."));
+      return card;
+    }
+    card.appendChild(el("div", "name", "Новый агент"));
+    var idInput = el("input", ""); idInput.value = nextAccountId(); idInput.maxLength = 16; idInput.setAttribute("aria-label", "Имя агента");
+    var role = el("select", "");
+    [["developer", "developer: пишет код"], ["reviewer", "reviewer: проверяет"], ["debugger", "debugger: чинит ошибки"]].forEach(function (r) {
+      var o = el("option", "", r[1]); o.value = r[0]; role.appendChild(o);
+    });
+    var form = el("div", "row");
+    form.appendChild(idInput); form.appendChild(document.createTextNode(" ")); form.appendChild(role);
+    card.appendChild(form);
+    if (addErr) card.appendChild(el("div", "err", addErr));
+    var go = el("button", "primary", "Добавить");
+    go.onclick = function () { addAccount(idInput.value.trim(), role.value); };
+    var cancel = el("button", "", "Отмена");
+    cancel.onclick = function () { addOpen = false; addErr = ""; renderAccounts(); };
+    var btns = el("div", "row"); btns.appendChild(go); btns.appendChild(document.createTextNode(" ")); btns.appendChild(cancel);
+    card.appendChild(btns);
+    return card;
+  }
+
+  function accountCall(path, method, obj) {
+    return api(path, { method: method, body: obj ? JSON.stringify(obj) : undefined });
+  }
+  function addAccount(id, role) {
+    accountCall("/api/accounts", "POST", { id: id, role: role })
+      .then(function () { addOpen = false; addErr = ""; })
+      .catch(function (e) { if (e.auth) return showLogin("Токен не подошёл"); addErr = e.message; })
+      .then(function () { lastSig = ""; refresh(); });
+  }
+  function setEnabled(id, enabled) {
+    accountCall("/api/accounts/" + encodeURIComponent(id) + "/enabled", "POST", { enabled: enabled })
+      .catch(function (e) { if (e.auth) showLogin("Токен не подошёл"); else alert("Не удалось: " + e.message); })
+      .then(function () { lastSig = ""; refresh(); });
+  }
+  function removeAccount(id) {
+    accountCall("/api/accounts/" + encodeURIComponent(id), "DELETE")
+      .catch(function (e) { if (e.auth) showLogin("Токен не подошёл"); else alert("Не удалось: " + e.message); })
+      .then(function () { lastSig = ""; refresh(); });
   }
 
   function githubUrl(repo, branch) {
@@ -480,7 +558,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
       // while the user has text selected, so clicks and selections are not destroyed by a refresh.
       var sig = JSON.stringify([d.accounts, d.tasks, d.events, d.draining, d.running, d.disk && d.disk.low, Math.floor(d.now / 15)]);
       var selecting = String(window.getSelection ? window.getSelection() : "").length > 0 ||
-        (document.activeElement && document.activeElement.tagName === "SELECT");
+        (document.activeElement && ["SELECT", "INPUT"].indexOf(document.activeElement.tagName) >= 0);
       var first = !data;
       if (sig === lastSig || (selecting && !first)) { showApp(); return; }
       lastSig = sig; data = d; showApp(); render();
