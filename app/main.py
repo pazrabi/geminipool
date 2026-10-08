@@ -12,6 +12,7 @@ from pathlib import Path
 
 import executor
 import server
+from oauth import OAuth
 from pool import Pool
 
 
@@ -36,7 +37,7 @@ async def main() -> None:
         quota_checker=executor.agy_quota,
         models_lister=executor.agy_models,
     )
-    server.configure(pool, token)
+    server.configure(pool, token, OAuth(pool.db_path, token))
     httpd = ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8080"))), server.Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     logging.getLogger("main").info("gemini-pool started, accounts=%s", [a["id"] for a in pool.list_accounts()])
