@@ -134,6 +134,44 @@ class AccountTests(unittest.TestCase):
         self.assertIsNotNone(self.pool._claim_next())
 
 
+class EgressAssignmentTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def pool(self, **kw):
+        return Pool(self.tmp / "data", runner=_never, accounts=[{"id": "acc1", "role": "developer"}], **kw)
+
+    def test_new_agents_get_consecutive_ports_when_egress_is_on(self):
+        pool = self.pool(egress=True)
+        a, b = pool.add_account("acc2"), pool.add_account("acc3", "reviewer")
+        self.assertEqual((a["egress"], b["egress"]), ({"mode": "own_ipv6", "port": 3101}, {"mode": "own_ipv6", "port": 3102}))
+        saved = {x["id"]: x.get("proxy") for x in json.loads((self.tmp / "data" / "accounts.json").read_text())}
+        self.assertEqual(saved, {"acc1": None, "acc2": "http://127.0.0.1:3101", "acc3": "http://127.0.0.1:3102"})
+
+    def test_a_removed_agents_address_is_never_given_to_another(self):
+        pool = self.pool(egress=True)
+        pool.add_account("acc2")
+        pool.remove_account("acc2")
+        self.assertEqual(pool.add_account("acc3")["egress"]["port"], 3102)
+
+    def test_no_ports_without_the_egress_service(self):
+        pool = self.pool()
+        self.assertEqual(pool.add_account("acc2")["egress"], {"mode": "server_ip"})
+
+    def test_an_external_proxy_is_labelled_without_its_credentials(self):
+        pool = Pool(self.tmp / "data", runner=_never,
+                    accounts=[{"id": "acc1", "role": "developer", "proxy": "http://user:secret@proxy.example.com:8080"}])
+        label = pool.list_accounts()[0]["egress"]
+        self.assertEqual(label, {"mode": "external_proxy", "host": "proxy.example.com:8080"})
+        self.assertNotIn("secret", json.dumps(pool.list_accounts()))
+
+    def test_the_agent_environment_uses_its_proxy(self):
+        pool = self.pool(egress=True)
+        pool.add_account("acc2")
+        self.assertEqual(pool._agent_env("acc2")["HTTPS_PROXY"], "http://127.0.0.1:3101")
+        self.assertNotIn("HTTPS_PROXY", pool._agent_env("acc1"))
+
+
 class AccountApiTests(unittest.TestCase):
     def setUp(self):
         tmp = Path(tempfile.mkdtemp())

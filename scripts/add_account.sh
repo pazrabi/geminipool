@@ -66,7 +66,20 @@ for p in $(pgrep -u pool -x agy 2>/dev/null); do
   if tr "\0" "\n" < /proc/$p/environ 2>/dev/null | grep -qx "HOME=$PROFILE"; then kill "$p" 2>/dev/null || true; fi
 done
 install -d -o pool -g pool "$PROFILE"
-tmux new-session -d -s "$SESSION" -x 200 -y 50 "su pool -s /bin/bash -c 'cd $DATA && HOME=$PROFILE /home/pool/.local/bin/agy'"
+# An agent with its own outgoing address signs in from that address too, not from the server's shared one.
+PROXY=$(python3 - "$ID" <<'PY'
+import json, sys
+try:
+    for a in json.load(open("/var/lib/gemini-pool/accounts.json")):
+        if a.get("id") == sys.argv[1]:
+            print(a.get("proxy") or "")
+except Exception:
+    pass
+PY
+)
+PROXY_ENV=""
+[ -n "$PROXY" ] && PROXY_ENV="HTTPS_PROXY=$PROXY"
+tmux new-session -d -s "$SESSION" -x 200 -y 50 "su pool -s /bin/bash -c 'cd $DATA && HOME=$PROFILE $PROXY_ENV /home/pool/.local/bin/agy'"
 REMOTE
 
   pane() { "${SSHN[@]}" "tmux capture-pane -p -t '$SESSION' -S -200"; }

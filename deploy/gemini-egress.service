@@ -1,0 +1,19 @@
+[Unit]
+Description=Per-agent IPv6 egress proxy for the Gemini pool
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pool
+Group=pool
+ExecStart=/usr/bin/python3 /opt/gemini-pool/app/egress_proxy.py --accounts /var/lib/gemini-pool/accounts.json
+# Adding the per-agent IPv6 addresses to the interface is the only privilege needed.
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+PrivateTmp=true
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

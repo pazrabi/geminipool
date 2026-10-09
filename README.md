@@ -48,6 +48,11 @@ The dashboard has the same pieces: **+ Добавить агента**, a card s
 turn an agent off or delete it. An agent takes no task until its login exists. `POOL_MAX_CONCURRENT` (server env, now 2) caps
 how many tasks run at once on the small server. Per-agent `proxy` in `accounts.json` routes one agent through an HTTPS proxy.
 
+## Separate outgoing addresses
+
+Each agent can leave the server from its own IPv6 address (`app/egress_proxy.py`, `deploy/gemini-egress.service`; set
+`POOL_EGRESS=1` so new agents get one automatically). An agent without one uses the server's IPv4. See `deploy/SETUP.md`.
+
 ## Connecting Claude
 
 **Claude Code**: `claude mcp add --scope user --transport http gemini-pool <PUBLIC_URL>/mcp --header "Authorization: Bearer $(cat ~/projects/.gemini-pool-mcp-token)"`

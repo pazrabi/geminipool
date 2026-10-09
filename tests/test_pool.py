@@ -171,6 +171,15 @@ class PoolTests(unittest.TestCase):
         self.assertEqual((t["status"], t["account_id"]), ("done", "acc2"), t["report"])
         self.assertEqual({a["id"]: a["state"] for a in self.pool.list_accounts()}["acc1"], "auth_error")
 
+    def test_a_dead_login_is_recognised_and_the_task_moves_on(self):
+        dead = "Authentication required. Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/auth?x=1"
+        self.agent.script = [failing(dead), write_file("src/x.py")]
+        tid = self.submit()
+        self.run_pool()
+        t = self.pool.get_task(tid)
+        self.assertEqual((t["status"], t["account_id"]), ("done", "acc2"), t["report"])
+        self.assertEqual({a["id"]: a["state"] for a in self.pool.list_accounts()}["acc1"], "auth_error")
+
     def test_failed_limit_check_sets_an_ineligible_account_aside_and_a_good_one_restores_it(self):
         self.pool.quota_checker = lambda env: (False, "error: Eligibility check failed: not eligible. Verify your account")
         self.pool.check_quota("acc1")

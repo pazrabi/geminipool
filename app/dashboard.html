@@ -323,6 +323,11 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
       }
       card.appendChild(info);
       card.appendChild(modelRow(a));
+      if (a.egress) {
+        var net = a.egress.mode === "own_ipv6" ? "свой IPv6-адрес (порт " + a.egress.port + ")"
+          : a.egress.mode === "external_proxy" ? "внешний прокси " + a.egress.host : "общий IPv4 сервера";
+        card.appendChild(el("div", "row muted", "Выход в сеть: " + net));
+      }
 
       if (a.logged_in === false) {
         card.appendChild(el("div", "row muted", "Агент не войдёт в задачи, пока не выполнен вход в Google. Выполните на вашем Mac:"));

@@ -40,6 +40,7 @@ async def main() -> None:
         push_token=os.environ.get("GIT_PUSH_TOKEN") or None,
         quota_checker=executor.agy_quota,
         require_login=True,
+        egress=os.environ.get("POOL_EGRESS") == "1",
         max_concurrent=int(os.environ.get("POOL_MAX_CONCURRENT", "0")),
         models_lister=executor.agy_models,
     )

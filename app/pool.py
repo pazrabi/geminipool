@@ -32,7 +32,8 @@ TEST_TIMEOUT_S = int(os.environ.get("POOL_TEST_TIMEOUT", "900"))
 
 QUOTA_RE = re.compile(r"RESOURCE_EXHAUSTED|\b429\b|quota|rate.?limit|too many requests", re.I)
 AUTH_RE = re.compile(
-    r"\b401\b|UNAUTHENTICATED|API key not valid|PERMISSION_DENIED|no auth|not eligible|Verify your account|Eligibility check failed",
+    r"\b401\b|UNAUTHENTICATED|API key not valid|PERMISSION_DENIED|no auth|not eligible|Verify your account|"
+    r"Eligibility check failed|Authentication required|visit the URL to log in",
     re.I,
 )
 NETWORK_RE = re.compile(r"ECONNRESET|ETIMEDOUT|ENOTFOUND|fetch failed|socket hang up", re.I)
@@ -239,7 +240,10 @@ class Pool:
         models_lister: Callable[[dict[str, str]], tuple[bool, str]] | None = None,
         require_login: bool = False,
         max_concurrent: int = 0,
+        egress: bool = False,
     ):
+        # egress: give each new agent its own local proxy port, which the egress service maps to its own IPv6 address.
+        self.egress = egress
         # require_login: an account without an agy login is not given tasks (it would only fail them).
         # max_concurrent: cap on tasks running at once, to protect a small server; 0 means no cap.
         self.require_login = require_login
@@ -370,9 +374,19 @@ class Pool:
         for acc in accounts:
             acc["model"] = self._model_for(acc["id"])
             acc["logged_in"] = self.login_present(acc["id"])
+            acc["egress"] = self._egress_label(acc["id"])
         return accounts
 
     # ---- account management ---------------------------------------------
+
+    def _egress_label(self, account_id: str) -> dict[str, Any]:
+        proxy = str(self.accounts_cfg.get(account_id, {}).get("proxy") or "")
+        m = re.fullmatch(r"http://127\.0\.0\.1:(\d+)/?", proxy)
+        if m:
+            return {"mode": "own_ipv6", "port": int(m.group(1))}
+        if proxy:
+            return {"mode": "external_proxy", "host": proxy.split("@")[-1].split("//")[-1]}
+        return {"mode": "server_ip"}
 
     def login_present(self, account_id: str) -> bool:
         """True once agy has stored a Google login in the account's profile."""
@@ -395,10 +409,29 @@ class Pool:
             if account_id in self.accounts_cfg:
                 raise ValueError(f"account {account_id} already exists")
             self.accounts_cfg[account_id] = {"id": account_id, "role": role}
+            if self.egress:
+                self.accounts_cfg[account_id]["proxy"] = f"http://127.0.0.1:{self._next_egress_port()}"
             (self.profiles / account_id).mkdir(parents=True, exist_ok=True)
             self._save_accounts()
             self._sync_accounts()
         return next(a for a in self.list_accounts() if a["id"] == account_id)
+
+    def _next_egress_port(self) -> int:
+        """A port above every one ever handed out, so a removed agent's address is never given to someone else."""
+        state = self.data / "egress_ports.json"
+        try:
+            last = int(json.loads(state.read_text()).get("last", 3100))
+        except (OSError, ValueError):
+            last = 3100
+        for cfg in self.accounts_cfg.values():
+            m = re.fullmatch(r"http://127\.0\.0\.1:(\d+)/?", str(cfg.get("proxy") or ""))
+            if m:
+                last = max(last, int(m.group(1)))
+        port = last + 1
+        if port > 3999:
+            raise ValueError("no free egress ports left")
+        state.write_text(json.dumps({"last": port}))
+        return port
 
     def set_account_enabled(self, account_id: str, enabled: bool) -> dict[str, Any]:
         with self._cfg_lock:
