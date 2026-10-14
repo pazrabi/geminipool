@@ -101,6 +101,11 @@ TOOLS = [
         "inputSchema": {**_OBJ, "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]},
     },
     {
+        "name": "cancel_task",
+        "description": "Cancel a task (or a pipeline's waiting stage) that is still queued. A running task cannot be cancelled.",
+        "inputSchema": {**_OBJ, "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]},
+    },
+    {
         "name": "list_tasks",
         "description": "Recent tasks, newest first.",
         "inputSchema": {**_OBJ, "properties": {"limit": {"type": "integer", "default": 20}}},
@@ -155,6 +160,9 @@ def _call_tool(name: str, args: dict[str, Any]) -> Any:
         if task.get("pipeline"):
             out["stage"], out["round"] = task["pipeline"]["stage"], task["pipeline"]["round"]
         return out
+    if name == "cancel_task":
+        task = _pool.cancel_task(args["task_id"])
+        return {"id": task["id"], "status": task["status"]}
     if name == "list_tasks":
         return _pool.list_tasks(int(args.get("limit", 20)))
     if name == "list_accounts":
@@ -474,6 +482,15 @@ button{{font:inherit;padding:10px 18px;cursor:pointer}}.err{{color:#c8382d}}.mon
                     raise ValueError('body must be {"enabled": true|false}')
                 account_id = path.split("/")[3]
                 return self._json(200, _pool.set_account_enabled(account_id, body["enabled"]))
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
+        cancel = re.fullmatch(r"/api/tasks/([0-9a-f]{12})/cancel", path)
+        if cancel:
+            if not self._authorized():
+                return self._json(401, {"error": "unauthorized"})
+            assert _pool is not None
+            try:
+                return self._json(200, _task_summary(_pool.cancel_task(cancel.group(1))))
             except ValueError as exc:
                 return self._json(400, {"error": str(exc)})
         recover = re.fullmatch(r"/api/tasks/([0-9a-f]{12})/recover", path)

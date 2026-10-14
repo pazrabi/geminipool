@@ -160,6 +160,22 @@ def build_prompt(task: dict[str, Any]) -> str:
     )
 
 
+RESET_RE = re.compile(r"Resets? in\s+(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?", re.I)
+MAX_QUOTA_PAUSE_S = 8 * 86400
+
+
+def quota_pause_seconds(text: str) -> int:
+    """How long to keep an agent out after a quota error: the reset time Google names (e.g. "Resets in 100h21m6s"),
+    capped, plus a minute; the default of five hours when the text names none."""
+    m = RESET_RE.search(text or "")
+    if m and any(m.groups()):
+        d, h, mi, sec = (int(g or 0) for g in m.groups())
+        seconds = d * 86400 + h * 3600 + mi * 60 + sec
+        if seconds > 0:
+            return min(seconds + 60, MAX_QUOTA_PAUSE_S)
+    return QUOTA_PAUSE_S
+
+
 def parse_verdict(text: str) -> str | None:
     """The reviewer's last `VERDICT: APPROVE|CHANGES` line, or None if there is none."""
     found = VERDICT_RE.findall(text or "")
@@ -175,7 +191,7 @@ def failure_reason(report: dict[str, Any] | None) -> str:
     if report.get("violations"):
         return "violation"
     error = str(report.get("error") or "")
-    for prefix, name in (("internal", "internal"), ("quota", "quota"), ("account auth", "auth"),
+    for prefix, name in (("cancelled", "cancelled"), ("internal", "internal"), ("quota", "quota"), ("account auth", "auth"),
                          ("network", "network"), ("timeout", "timeout"), ("agent exited", "agent_error")):
         if error.startswith(prefix):
             return name
@@ -746,6 +762,28 @@ class Pool:
             job.add_done_callback(self.running.discard)
             started += 1
 
+    def cancel_task(self, task_id: str) -> dict[str, Any]:
+        """Cancel a task that has not started. A running task cannot be stopped safely, so it is refused."""
+        task = self.get_task(task_id)
+        if task is None:
+            raise ValueError("unknown task")
+        if task["status"] != "queued":
+            raise ValueError(f"only a task waiting in the queue can be cancelled (this one is {task['status']})")
+        conn = self._db()
+        try:  # the check and the change in one statement, so a task that just started is not touched
+            changed = conn.execute(
+                "UPDATE tasks SET status = 'failed', account_id = NULL, updated_at = ?, report = ?"
+                " WHERE id = ? AND status = 'queued'",
+                (time.time(), json.dumps({"error": "cancelled by the owner", "account": None}), task_id),
+            ).rowcount
+        finally:
+            conn.close()
+        if not changed:
+            raise ValueError("the task has just started and can no longer be cancelled")
+        self._event("cancelled", None, task_id, "Task cancelled by the owner while it waited in the queue.")
+        self._after_terminal(task_id)  # a pipeline whose waiting stage is cancelled ends here
+        return self.task_view(task_id) or task
+
     def recover_task(self, task_id: str) -> dict[str, Any]:
         """Redo the finishing steps (checks, tests, commit, push) for a task that failed with an internal error.
 
@@ -853,7 +891,7 @@ class Pool:
             return self._retry_or_fail(task, account_id, "timeout", output)
         if res.returncode != 0:
             if QUOTA_RE.search(output):
-                self._pause(account_id, "quota", time.time() + QUOTA_PAUSE_S, output)
+                self._pause(account_id, "quota", time.time() + quota_pause_seconds(output), output)
                 return self._retry_or_fail(task, account_id, "quota limit", output, delay=0)
             if AUTH_RE.search(output):
                 self._pause(account_id, "auth_error", None, output)

@@ -127,6 +127,15 @@ class PipelineApiTests(unittest.TestCase):
         stages = sorted(t["stage"] for t in data["tasks"])
         self.assertEqual(stages, ["develop", "review"])
 
+    def test_cancel_over_http_and_mcp(self):
+        a = self.submit(review=False)["task_id"]
+        b = self.submit(review=False)["task_id"]
+        status, data = self.http("POST", f"/api/tasks/{a}/cancel")
+        self.assertEqual((status, data["status"]), (200, "failed"))
+        self.assertEqual(self.tool("cancel_task", task_id=b)["status"], "failed")
+        self.assertEqual(self.http("POST", f"/api/tasks/{a}/cancel")[0], 400)  # already cancelled
+        self.assertIn("error", self.tool("cancel_task", task_id="000000000000"))
+
     def test_the_task_endpoint_returns_the_effective_view(self):
         self.agent.script = [writes("src/x.py", "v1\n"), approve()]
         tid = self.submit()["task_id"]

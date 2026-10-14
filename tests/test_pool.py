@@ -171,6 +171,48 @@ class PoolTests(unittest.TestCase):
         self.assertEqual((t["status"], t["account_id"]), ("done", "acc2"), t["report"])
         self.assertEqual({a["id"]: a["state"] for a in self.pool.list_accounts()}["acc1"], "auth_error")
 
+    def test_quota_pause_follows_the_reset_time_google_names(self):
+        real = 'RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade. Resets in 100h21m6s.'
+        self.assertEqual(poolmod.quota_pause_seconds(real), 100 * 3600 + 21 * 60 + 6 + 60)
+        self.assertEqual(poolmod.quota_pause_seconds("quota exceeded, resets in 45m"), 45 * 60 + 60)
+        self.assertEqual(poolmod.quota_pause_seconds("Resets in 2d3h"), 2 * 86400 + 3 * 3600 + 60)
+        self.assertEqual(poolmod.quota_pause_seconds("429 quota"), poolmod.QUOTA_PAUSE_S)  # no time named: the default
+        self.assertEqual(poolmod.quota_pause_seconds("Resets in 900h"), poolmod.MAX_QUOTA_PAUSE_S)  # capped
+
+    def test_quota_error_pauses_the_agent_until_the_named_reset(self):
+        self.agent.script = [failing("429 RESOURCE_EXHAUSTED Individual quota reached. Resets in 100h21m6s."),
+                             write_file("src/x.py")]
+        self.submit()
+        self.run_pool()
+        acc = {a["id"]: a for a in self.pool.list_accounts()}["acc1"]
+        left_h = (acc["paused_until"] - time.time()) / 3600
+        self.assertGreater(left_h, 100)
+        self.assertLess(left_h, 101)
+
+    def test_a_waiting_task_can_be_cancelled(self):
+        tid = self.submit(review=False)
+        self.pool.draining = True  # keep it waiting
+        task = self.pool.cancel_task(tid)
+        self.assertEqual(task["status"], "failed")
+        self.assertEqual(self.pool.get_task(tid)["report"]["error"], "cancelled by the owner")
+        self.assertIn("cancelled", [e["kind"] for e in self.pool.list_events()])
+        self.pool.draining = False
+        self.assertIsNone(self.pool._claim_next())  # nothing left to run
+
+    def test_only_waiting_tasks_can_be_cancelled(self):
+        tid = self.submit(review=False)
+        self.pool._claim_next()  # now running
+        with self.assertRaises(ValueError):
+            self.pool.cancel_task(tid)
+        with self.assertRaises(ValueError):
+            self.pool.cancel_task("nope00000000")
+
+    def test_cancelling_a_pipeline_stage_ends_the_pipeline(self):
+        tid = self.submit(review=True)
+        self.pool.cancel_task(tid)
+        view = self.pool.task_view(tid)
+        self.assertEqual((view["status"], view["report"]["reason"]), ("failed", "cancelled"))
+
     def test_a_dead_login_is_recognised_and_the_task_moves_on(self):
         dead = "Authentication required. Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/auth?x=1"
         self.agent.script = [failing(dead), write_file("src/x.py")]

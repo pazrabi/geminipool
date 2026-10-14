@@ -131,7 +131,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
   "use strict";
   var KEY = "gemini-pool-token";
   var token = null, filter = "all", openTasks = {}, taskDetail = {}, quotaBusy = {}, quotaFresh = {}, data = null, timer = null, lastSig = "";
-  var modelLists = {}, modelLoading = {}, modelBusy = {}, modelErr = {}, clockOffset = 0, recovering = {}, addOpen = false, addErr = "";
+  var modelLists = {}, modelLoading = {}, modelBusy = {}, modelErr = {}, clockOffset = 0, recovering = {}, cancelling = {}, addOpen = false, addErr = "";
 
   function store(v) { try { if (v === null) localStorage.removeItem(KEY); else localStorage.setItem(KEY, v); } catch (e) {} }
   function load() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
@@ -234,7 +234,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
   var REASON = { max_rounds: "ревьюер не одобрил за отведённые раунды", review_no_verdict: "ревьюер не дал вердикт",
     review_failed: "ревью не удалось выполнить", no_changes: "разработчик ничего не изменил", violation: "нарушены правила (лишние файлы)",
     internal: "внутренняя ошибка пула", quota: "лимит исчерпан", auth: "проблема со входом агента", network: "сеть",
-    timeout: "таймаут", agent_error: "ошибка агента" };
+    timeout: "таймаут", agent_error: "ошибка агента", cancelled: "отменено владельцем" };
   function shortModel(m) { return m ? String(m).replace(/^gemini-/, "") : ""; }
   function stageLabel(t) {
     if (!t.stage) return "";
@@ -477,6 +477,17 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
       rec.appendChild(el("span", "muted", "  работа агента сохранена на сервере; лимит не тратится"));
       body.appendChild(rec);
     }
+    if (t.status === "queued") {
+      var cancelRow = el("div", "row");
+      var cb = el("button", "danger", cancelling[t.id] ? "Отменяю…" : "Отменить задачу");
+      cb.disabled = !!cancelling[t.id];
+      cb.onclick = function (ev) {
+        ev.stopPropagation();
+        if (confirm("Отменить задачу " + t.id + "? Она ещё не началась, ничего не потеряется.")) cancelTask(t.id);
+      };
+      cancelRow.appendChild(cb);
+      body.appendChild(cancelRow);
+    }
     if (!d) body.appendChild(el("div", "row muted", "Загрузка…"));
     return body;
   }
@@ -623,6 +634,13 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
     api("/api/tasks/" + id + "/recover", { method: "POST" })
       .catch(function (e) { if (e.auth) showLogin("Токен не подошёл"); else alert("Не удалось: " + e.message); })
       .then(function () { recovering[id] = false; lastSig = ""; refresh(); });
+  }
+
+  function cancelTask(id) {
+    cancelling[id] = true; renderTasks();
+    api("/api/tasks/" + id + "/cancel", { method: "POST" })
+      .catch(function (e) { if (e.auth) showLogin("Токен не подошёл"); else alert("Не удалось: " + e.message); })
+      .then(function () { cancelling[id] = false; lastSig = ""; refresh(); });
   }
 
   function toggleDrain() {

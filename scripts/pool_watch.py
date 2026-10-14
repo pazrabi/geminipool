@@ -22,10 +22,10 @@ DEFAULT_URL = "https://193-41-86-92.sslip.io"
 DEFAULT_TOKEN_FILE = "~/projects/.gemini-pool-mcp-token"
 FINISHED = ("done", "failed", "needs_lead")
 TASK_ID = re.compile(r"[0-9a-f]{12}")
-FAILURE_REASONS = (("internal", "internal"), ("quota", "quota"), ("account auth", "auth"),
+FAILURE_REASONS = (("cancelled", "cancelled"), ("internal", "internal"), ("quota", "quota"), ("account auth", "auth"),
                    ("network", "network"), ("timeout", "timeout"), ("agent exited", "agent_error"))
 # Reasons the pool itself gives for a pipeline that needs the lead (fixed words, never free text).
-PIPELINE_REASONS = {"max_rounds", "review_no_verdict", "review_failed", "no_changes", "violation", "internal", "quota",
+PIPELINE_REASONS = {"cancelled", "max_rounds", "review_no_verdict", "review_failed", "no_changes", "violation", "internal", "quota",
                     "auth", "network", "timeout", "agent_error"}
 
 
