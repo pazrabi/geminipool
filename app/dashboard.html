@@ -575,7 +575,7 @@ main { transition: margin .2s ease; }
     b.onclick = function () { set(!expanded); render(); };
     box.appendChild(b);
   }
-  function isActiveTask(t) { return t.status === "queued" || t.status === "running" || t.status === "needs_lead"; }
+  function isActiveTask(t) { return t.status === "queued" || t.status === "running"; }
 
   function renderTasks() {
     var filters = document.getElementById("filters"); filters.textContent = "";
@@ -649,7 +649,7 @@ main { transition: margin .2s ease; }
     var box = document.getElementById("pipelines"); box.textContent = "";
     var every = (data.pipelines || []).slice(0, LIST_MAX);
     if (!every.length) { box.appendChild(el("div", "empty", "Конвейеров пока нет. Задача с review=true проходит разработку, ревью и доработку сама.")); return; }
-    var live = every.filter(function (p) { return p.status === "active" || p.status === "needs_lead"; });
+    var live = every.filter(function (p) { return p.status === "active"; });
     var list = showAllPipes ? every : live;
     if (!list.length) box.appendChild(el("div", "empty", "Активных конвейеров нет"));
     list.forEach(function (p) {
