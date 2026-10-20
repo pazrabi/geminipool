@@ -277,7 +277,7 @@ def overview(pool: Pool) -> dict[str, Any]:
         "now": time.time(),
         "accounts": pool.list_accounts(),
         "tasks": [_task_summary(t) for t in tasks],
-        "pipelines": pool.list_pipelines(12),
+        "pipelines": pool.list_pipelines(50),
         "events": pool.list_events(50),
         "counts": counts,
         **pool.maintenance_status(),
