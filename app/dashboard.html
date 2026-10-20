@@ -84,6 +84,18 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
 #login { max-width: 420px; margin-top: 12vh; }
 #login input { width: 100%; font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); margin: 12px 0; }
 .err { color: var(--bad); min-height: 1.3em; }
+.drop { border: 2px dashed var(--line); border-radius: 12px; padding: 16px; background: var(--card); }
+.drop.over { border-color: var(--accent); background: var(--run-bg); }
+.drop .opts { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.drop label { font-size: 14px; display: inline-flex; gap: 6px; align-items: center; }
+.drop input[type=text] { font: inherit; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); min-width: 12em; }
+.prog { height: 8px; border-radius: 99px; background: var(--idle-bg); overflow: hidden; margin-top: 8px; }
+.prog i { display: block; height: 100%; background: var(--accent); width: 0; }
+.file-list { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.fline { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 12.5px; padding: 2px 0; word-break: break-all; }
+button.small { padding: 0 8px; line-height: 1.4; }
+button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+.file-list .flist { font-size: 12.5px; color: var(--muted); margin-top: 6px; word-break: break-all; }
 @media (max-width: 640px) {
   .counters { grid-template-columns: repeat(2, 1fr); }
   .task .head { grid-template-columns: auto 1fr; }
@@ -122,6 +134,22 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
   <h2>Задачи</h2>
   <div class="filters" id="filters"></div>
   <div id="tasks"></div>
+  <h2>Хранилище</h2>
+  <div class="drop" id="drop">
+    <div><b>Перетащите сюда фото, видео, документы, правила или папку проекта</b></div>
+    <div class="muted" id="files-hint"></div>
+    <div class="opts">
+      <button id="pick-files">Выбрать файлы</button>
+      <button id="pick-dir">Выбрать папку</button>
+      <input type="text" id="up-name" placeholder="Название" maxlength="80" aria-label="Название">
+      <input type="text" id="up-note" placeholder="Заметка" maxlength="300" aria-label="Заметка">
+      <label><input type="checkbox" id="up-pin"> Постоянный (не удалять автоматически)</label>
+    </div>
+    <div id="up-status"></div>
+    <input type="file" id="in-files" multiple hidden>
+    <input type="file" id="in-dir" webkitdirectory hidden>
+  </div>
+  <div id="filelist"></div>
   <h2>Ошибки агентов</h2>
   <div id="events"></div>
 </main>
@@ -675,6 +703,7 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
 
   function refresh() {
     clearTimeout(timer);
+    loadFiles();
     api("/api/overview").then(function (d) {
       clockOffset = d.now - Date.now() / 1000;
       // Rebuild the page only when something changed (or every 15 s for the countdowns), and never
@@ -693,6 +722,206 @@ select { font: inherit; max-width: 100%; padding: 4px 8px; border-radius: 8px; b
       if (token) timer = setTimeout(refresh, 4000);
     });
   }
+
+
+  // ---- uploaded files ------------------------------------------------------
+  var filesData = null, filesSig = "", uploading = false;
+  function bytes(n) {
+    if (n < 1024) return n + " Б";
+    var u = ["КБ", "МБ", "ГБ"], i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < 2);
+    return n.toFixed(n < 10 ? 1 : 0) + " " + u[i];
+  }
+  function loadFiles() {
+    if (uploading) return;
+    api("/api/uploads").then(function (d) {
+      var sig = JSON.stringify(d);
+      if (sig === filesSig) return;
+      var box = document.getElementById("filelist");
+      if (document.activeElement && box.contains(document.activeElement)) return;  // do not rebuild under a focused control
+      filesSig = sig; filesData = d; renderFiles();
+    }).catch(function (e) { if (e.auth) return; });
+  }
+  function patchUpload(id, obj) {
+    api("/api/uploads/" + id, { method: "POST", body: JSON.stringify(obj) })
+      .catch(function (e) { alert("Не удалось: " + e.message); })
+      .then(function () { filesSig = ""; loadFiles(); });
+  }
+  function downloadUpload(id, name, branch) {
+    var url = "/api/uploads/" + id + "/download" + (branch ? "?branch=" + encodeURIComponent(branch) : "");
+    fetch(url, { headers: { "Authorization": "Bearer " + token } }).then(function (r) {
+      if (!r.ok) return r.json().then(function (j) { throw new Error(j.error || r.status); });
+      return r.blob();
+    }).then(function (b) {
+      var a = document.createElement("a"); a.href = URL.createObjectURL(b);
+      a.download = name + (branch ? "-" + branch.replace(/\//g, "_") : "") + ".zip";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 10000);
+    }).catch(function (e) { alert("Не удалось скачать: " + e.message); });
+  }
+  function deleteUpload(u) {
+    if (!confirm("Удалить «" + u.name + "» с сервера? Это нельзя отменить.")) return;
+    api("/api/uploads/" + u.id, { method: "DELETE" })
+      .catch(function (e) { alert("Не удалось: " + e.message); })
+      .then(function () { filesSig = ""; loadFiles(); });
+  }
+  var openUp = {}, upDetail = {};
+  function loadUpDetail(id) {
+    api("/api/uploads/" + id).then(function (d) { upDetail[id] = d; renderFiles(); }).catch(function () {});
+  }
+  function deleteOneFile(u, name) {
+    if (!confirm("Удалить файл «" + name + "» из «" + u.name + "»?")) return;
+    api("/api/uploads/" + u.id + "/file?path=" + encodeURIComponent(name), { method: "DELETE" })
+      .catch(function (e) { alert("Не удалось: " + e.message); })
+      .then(function () { delete upDetail[u.id]; filesSig = ""; loadFiles(); loadUpDetail(u.id); });
+  }
+  function uploadCard(u) {
+    var card = el("div", "card");
+    var top = el("div", "top");
+    top.appendChild(el("span", "name", u.name));
+    top.appendChild(u.pinned ? pill("s-ok", "постоянный") : pill("s-idle", "обычный"));
+    if (u.project) top.appendChild(pill("s-run", "проект"));
+    card.appendChild(top);
+    card.appendChild(el("div", "row muted", u.files + " файл. · " + bytes(u.size) + " · " + dateTime(u.created_at)));
+    var idRow = el("div", "row muted"); idRow.appendChild(document.createTextNode("id для Claude: "));
+    idRow.appendChild(el("span", "mono", u.id)); card.appendChild(idRow);
+    if (u.note) card.appendChild(el("div", "row", u.note));
+    var det = el("details", "row");
+    if (openUp[u.id]) det.open = true;
+    det.appendChild(el("summary", "muted", "Файлы внутри"));
+    var names = upDetail[u.id] ? upDetail[u.id].file_names : null;
+    if (!names) det.appendChild(el("div", "muted", "Загрузка списка…"));
+    else {
+      names.forEach(function (n) {
+        var line = el("div", "fline"); line.appendChild(el("span", "mono", n));
+        var x = el("button", "danger small", "×"); x.title = "Удалить файл"; x.onclick = function () { deleteOneFile(u, n); };
+        line.appendChild(x); det.appendChild(line);
+      });
+      if (u.files > names.length) det.appendChild(el("div", "muted", "… и ещё " + (u.files - names.length)));
+    }
+    det.ontoggle = function () {
+      openUp[u.id] = det.open;
+      if (det.open && !upDetail[u.id]) loadUpDetail(u.id);
+    };
+    card.appendChild(det);
+    var opts = el("div", "row");
+    var pin = el("input", ""); pin.type = "checkbox"; pin.checked = u.pinned;
+    pin.onchange = function () { patchUpload(u.id, { pinned: pin.checked }); };
+    var pl = el("label", ""); pl.appendChild(pin); pl.appendChild(document.createTextNode(" постоянный (не удалять автоматически)"));
+    opts.appendChild(pl); card.appendChild(opts);
+    var ops = el("div", "row ops");
+    var dl = el("button", "", "Скачать"); dl.onclick = function () { downloadUpload(u.id, u.name); };
+    ops.appendChild(dl);
+    if (u.project) {
+      var br = el("button", "", "Скачать ветку…");
+      br.onclick = function () { var b = prompt("Имя ветки, например pool/0123456789ab"); if (b) downloadUpload(u.id, u.name, b.trim()); };
+      ops.appendChild(br);
+    }
+    var del = el("button", "danger", "Удалить"); del.onclick = function () { deleteUpload(u); };
+    ops.appendChild(del); card.appendChild(ops);
+    return card;
+  }
+  function renderFiles() {
+    var d = filesData, box = document.getElementById("filelist");
+    box.textContent = "";
+    var lim = d.limits;
+    document.getElementById("files-hint").textContent = "Занято " + bytes(lim.used) + " из " + bytes(lim.max_total) +
+      ". Один файл до " + bytes(lim.max_file) + ". Обычные файлы, которые " + lim.ttl_days + " дн. не использовались, удаляются сами; постоянные остаются.";
+    [["Постоянные", true], ["Обычные", false]].forEach(function (g) {
+      var list = d.uploads.filter(function (u) { return u.pinned === g[1]; });
+      box.appendChild(el("h2", "", g[0] + " (" + list.length + ")"));
+      if (!list.length) { box.appendChild(el("div", "empty", g[1] ? "Постоянных файлов нет: отметьте «постоянный» при загрузке или в карточке" : "Обычных файлов нет")); return; }
+      var grid = el("div", "file-list");
+      list.forEach(function (u) { grid.appendChild(uploadCard(u)); });
+      box.appendChild(grid);
+    });
+  }
+
+  function putFile(uploadId, file, rel, onBytes) {
+    return new Promise(function (resolve, reject) {
+      var x = new XMLHttpRequest();
+      x.open("PUT", "/api/uploads/" + uploadId + "/file?path=" + encodeURIComponent(rel));
+      x.setRequestHeader("Authorization", "Bearer " + token);
+      x.upload.onprogress = function (e) { if (e.lengthComputable) onBytes(e.loaded); };
+      x.onload = function () {
+        if (x.status === 200) return resolve();
+        var msg = "HTTP " + x.status; try { msg = JSON.parse(x.responseText).error || msg; } catch (e) {}
+        reject(new Error(rel + ": " + msg));
+      };
+      x.onerror = function () { reject(new Error(rel + ": нет связи")); };
+      x.send(file);
+    });
+  }
+  function startUpload(items) {  // items: [{file, rel}]
+    if (uploading || !items.length) return;
+    var status = document.getElementById("up-status");
+    var total = items.reduce(function (n, i) { return n + i.file.size; }, 0), done = 0;
+    var first = items[0].rel.split("/")[0];
+    var name = document.getElementById("up-name").value.trim() || (items.length > 1 || items[0].rel.indexOf("/") >= 0 ? first : items[0].rel);
+    uploading = true; status.textContent = "";
+    var line = el("div", "row", "Загрузка…"), prog = el("div", "prog"), bar = el("i"); prog.appendChild(bar);
+    status.appendChild(line); status.appendChild(prog);
+    var uploadId;
+    api("/api/uploads", { method: "POST", body: JSON.stringify({
+      name: name, note: document.getElementById("up-note").value.trim(),
+      pinned: document.getElementById("up-pin").checked }) })
+      .then(function (u) {
+        uploadId = u.id;
+        return items.reduce(function (chain, it, idx) {
+          return chain.then(function () {
+            line.textContent = "Загрузка " + (idx + 1) + " из " + items.length + ": " + it.rel;
+            return putFile(uploadId, it.file, it.rel, function (loaded) {
+              bar.style.width = Math.min(100, (done + loaded) / Math.max(total, 1) * 100) + "%";
+            }).then(function () { done += it.file.size; });
+          });
+        }, Promise.resolve());
+      })
+      .then(function () {
+        status.textContent = "Готово: " + items.length + " файл.";
+        document.getElementById("up-name").value = ""; document.getElementById("up-note").value = "";
+      })
+      .catch(function (e) {
+        status.textContent = "";
+        status.appendChild(el("div", "err", "Не удалось загрузить: " + e.message +
+          (uploadId ? " (то, что успело загрузиться, осталось в списке; можно удалить)" : "")));
+      })
+      .then(function () { uploading = false; filesSig = ""; loadFiles(); });
+  }
+  function entryFiles(entry, prefix) {  // dropped folders: walk the tree
+    if (entry.isFile) return new Promise(function (res) { entry.file(function (f) { res([{ file: f, rel: prefix + entry.name }]); }, function () { res([]); }); });
+    var reader = entry.createReader(), all = [];
+    function more() {
+      return new Promise(function (res) { reader.readEntries(res, function () { res([]); }); }).then(function (batch) {
+        if (!batch.length) return all;
+        all = all.concat(batch); return more();
+      });
+    }
+    return more().then(function (children) {
+      return Promise.all(children.map(function (c) { return entryFiles(c, prefix + entry.name + "/"); }));
+    }).then(function (lists) { return [].concat.apply([], lists); });
+  }
+  (function setupUploads() {
+    var drop = document.getElementById("drop");
+    document.getElementById("pick-files").onclick = function () { document.getElementById("in-files").click(); };
+    document.getElementById("pick-dir").onclick = function () { document.getElementById("in-dir").click(); };
+    function fromInput(ev) {
+      var list = Array.prototype.map.call(ev.target.files, function (f) { return { file: f, rel: f.webkitRelativePath || f.name }; });
+      ev.target.value = ""; startUpload(list);
+    }
+    document.getElementById("in-files").onchange = fromInput;
+    document.getElementById("in-dir").onchange = fromInput;
+    ["dragenter", "dragover"].forEach(function (n) { drop.addEventListener(n, function (e) { e.preventDefault(); drop.classList.add("over"); }); });
+    ["dragleave", "drop"].forEach(function (n) { drop.addEventListener(n, function (e) { e.preventDefault(); drop.classList.remove("over"); }); });
+    drop.addEventListener("drop", function (e) {
+      var items = e.dataTransfer && e.dataTransfer.items;
+      if (items && items.length && items[0].webkitGetAsEntry) {
+        var entries = Array.prototype.map.call(items, function (i) { return i.webkitGetAsEntry(); }).filter(Boolean);
+        Promise.all(entries.map(function (en) { return entryFiles(en, ""); })).then(function (lists) { startUpload([].concat.apply([], lists)); });
+      } else {
+        startUpload(Array.prototype.map.call(e.dataTransfer.files, function (f) { return { file: f, rel: f.name }; }));
+      }
+    });
+  })();
 
   document.getElementById("login-form").onsubmit = function (e) {
     e.preventDefault();

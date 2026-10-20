@@ -20,6 +20,7 @@ from typing import Any, Awaitable, Callable
 
 import git_ops
 import housekeeping
+import uploads as uploads_mod
 
 log = logging.getLogger("pool")
 
@@ -147,7 +148,7 @@ class RunResult:
 Runner = Callable[..., Awaitable[RunResult]]
 
 
-def build_prompt(task: dict[str, Any]) -> str:
+def build_prompt(task: dict[str, Any], materials: str = "") -> str:
     stage = task.get("stage")
     key = stage if stage in ("review", "rework") else task["role"]
     text = ROLE_TEXT[key].replace("{base}", task["base_branch"])
@@ -157,6 +158,7 @@ def build_prompt(task: dict[str, Any]) -> str:
         f"Goal:\n{task['goal']}\n\n"
         + allowed
         + (f"Tests that must pass: {task['test_cmd']}\n" if task["test_cmd"] else "")
+        + materials
     )
 
 
@@ -289,6 +291,7 @@ class Pool:
         self.disk_low = False
         self._last_space_attempt = 0.0
         self._init_db()
+        self.uploads = uploads_mod.UploadStore(self.data / "uploads", self._db, self._busy_upload_ids)
         self._sync_accounts()
         self._recover()
         self.housekeep()
@@ -343,7 +346,7 @@ class Pool:
         # Databases created before these columns existed get them added in place.
         existing = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
         for column in ("model TEXT", "started_at REAL", "pipeline_id TEXT", "stage TEXT",
-                       "round INTEGER NOT NULL DEFAULT 1", "base_ref TEXT", "parent_id TEXT"):
+                       "round INTEGER NOT NULL DEFAULT 1", "base_ref TEXT", "parent_id TEXT", "uploads TEXT"):
             if column.split()[0] not in existing:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {column}")
         conn.close()
@@ -583,8 +586,27 @@ class Pool:
     def _task_dict(row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)
         d["allowed_files"] = json.loads(d["allowed_files"])
+        d["uploads"] = json.loads(d["uploads"]) if d.get("uploads") else []
         d["report"] = json.loads(d["report"]) if d["report"] else None
         return d
+
+    def _busy_upload_ids(self) -> set[str]:
+        """Uploads that queued or running tasks need: attached materials and uploaded projects."""
+        conn = self._db()
+        try:
+            rows = conn.execute(
+                "SELECT repo, uploads FROM tasks WHERE status IN ('queued', 'running')"
+            ).fetchall()
+        finally:
+            conn.close()
+        busy: set[str] = set()
+        root = str(self.uploads.root)
+        for r in rows:
+            if r["uploads"]:
+                busy.update(json.loads(r["uploads"]))
+            if r["repo"].startswith(root + os.sep):
+                busy.add(Path(r["repo"]).name)
+        return busy
 
     # ---- submission ----------------------------------------------------
 
@@ -600,9 +622,10 @@ class Pool:
         review: bool = False,
         review_model: str | None = None,
         max_rounds: int = MAX_ROUNDS_DEFAULT,
+        uploads: list[str] | None = None,
     ) -> str:
         return self.submit_with_info(role, goal, repo, allowed_files, base_branch, test_cmd, model,
-                                     review, review_model, max_rounds)["task_id"]
+                                     review, review_model, max_rounds, uploads)["task_id"]
 
     def submit_with_info(
         self,
@@ -616,6 +639,7 @@ class Pool:
         review: bool = False,
         review_model: str | None = None,
         max_rounds: int = MAX_ROUNDS_DEFAULT,
+        uploads: list[str] | None = None,
     ) -> dict[str, Any]:
         """Queue a task. With review=True it becomes a pipeline: develop, then an automatic review by a reviewer
         agent, with up to max_rounds of rework until the reviewer approves. Returns the task id and any warnings."""
@@ -623,8 +647,18 @@ class Pool:
             raise ValueError(f"role must be one of {', '.join(ROLES)}")
         if not goal or not goal.strip():
             raise ValueError("goal is empty")
-        if not repo.startswith("https://") and not (self.allow_local_repos and Path(repo).is_dir()):
-            raise ValueError("repo must be an https:// URL")
+        uploads = list(dict.fromkeys(uploads or []))
+        for upload_id in uploads:
+            if not self.uploads.exists(upload_id):
+                raise ValueError(f"unknown upload {upload_id}")
+        if repo.startswith("upload:"):
+            # A project the owner uploaded: it becomes a git repository on the server and tasks work on it.
+            try:
+                repo = str(self.uploads.make_project(repo[len("upload:"):]))
+            except uploads_mod.UploadError as exc:
+                raise ValueError(str(exc))
+        elif not repo.startswith("https://") and not (self.allow_local_repos and Path(repo).is_dir()):
+            raise ValueError("repo must be an https:// URL, or upload:<id> for an uploaded project")
         if not allowed_files or not all(isinstance(p, str) and p for p in allowed_files):
             raise ValueError("allowed_files must be a non-empty list of glob patterns")
         model = (model or "").strip() or None
@@ -650,9 +684,11 @@ class Pool:
         try:
             conn.execute(
                 "INSERT INTO tasks (id, role, goal, repo, base_branch, allowed_files, test_cmd, model, status,"
-                " pipeline_id, stage, round, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, 1, ?, ?)",
+                " pipeline_id, stage, round, uploads, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, 1, ?, ?, ?)",
                 (task_id, role, goal, repo, base_branch, json.dumps(allowed_files), test_cmd, model,
-                 task_id if review else None, "develop" if review else None, t, t),
+                 task_id if review else None, "develop" if review else None,
+                 json.dumps(uploads) if uploads else None, t, t),
             )
             if review:
                 conn.execute(
@@ -878,8 +914,10 @@ class Pool:
         self._exec("UPDATE tasks SET branch = ? WHERE id = ?", (branch, task_id))
 
         model = task["model"] or self._model_for(account_id)  # the task's own model beats the account's
+        materials = await asyncio.to_thread(self.uploads.prompt_block, task["uploads"])
+        await asyncio.to_thread(self.uploads.touch, task["uploads"])
         res = await self.runner(
-            prompt=build_prompt(task),
+            prompt=build_prompt(task, materials),
             workdir=wt,
             env=self._agent_env(account_id),
             timeout=TASK_TIMEOUT_S,
@@ -1011,10 +1049,11 @@ class Pool:
         t = time.time()
         self._exec(
             "INSERT INTO tasks (id, role, goal, repo, base_branch, allowed_files, test_cmd, model, status, pipeline_id,"
-            " stage, round, base_ref, parent_id, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
+            " stage, round, base_ref, parent_id, uploads, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
             (task_id, role, goal, parent["repo"], parent["base_branch"], json.dumps(allowed), parent["test_cmd"], model,
-             pipe["id"], stage, round_no, base_ref, parent["id"], t, t),
+             pipe["id"], stage, round_no, base_ref, parent["id"],
+             json.dumps(parent["uploads"]) if parent.get("uploads") else None, t, t),
         )
         return task_id
 

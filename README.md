@@ -40,6 +40,19 @@ rework) until the end, then `done`, `needs_lead` or `failed`. A review waits in 
 model. `submit_task` warns when new work may touch the same files as work in flight. Roles needed: at least one `developer`
 and one `reviewer` agent, and `POOL_MAX_CONCURRENT` high enough for both (e.g. 3 with two developers and a reviewer).
 
+## Files for the agents (uploads)
+
+The dashboard section **Хранилище** takes photos, videos, documents and whole folders (drag and drop or the pick
+buttons) and stores them on the server under `<POOL_DATA>/uploads/<id>`. Each upload can be **pinned** (the automatic cleanup
+never removes it); the section lists pinned and ordinary uploads separately, shows the files inside and deletes a file or a
+whole upload. Nothing is attached to tasks automatically: rules for a project are a pinned upload that the lead attaches
+with `uploads` to that project's tasks. Unpinned uploads unused for `POOL_UPLOAD_TTL_DAYS` (14) are removed; limits:
+`POOL_UPLOAD_MAX_FILE_MB` (300) per file, `POOL_UPLOADS_MAX_MB` (10240) in total. `submit_task` takes `uploads=[id,...]`: the agents get the file paths and only read
+them (stages of a pipeline inherit them). `repo="upload:<id>"` makes an uploaded folder a git project: the pool commits it on
+`main`, tasks work on it and their `pool/<task>` branches are pushed back into that folder; **Скачать ветку…** downloads one as
+a zip. MCP `list_uploads` shows what exists. API: `GET/POST /api/uploads`, `PUT /api/uploads/<id>/file?path=…`,
+`GET|POST|DELETE /api/uploads/<id>`, `DELETE /api/uploads/<id>/file?path=…`, `GET /api/uploads/<id>/download[?branch=…]` (all need the token).
+
 ## Adding agents (Google accounts)
 
 On your Mac: `scripts/add_account.sh acc2 [developer|reviewer|debugger]`. It registers the agent in the pool, starts agy's

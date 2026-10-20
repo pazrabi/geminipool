@@ -100,6 +100,12 @@ def cleanup(pool: "Pool", aggressive: bool = False) -> dict[str, int]:
         if age > keep_for:
             _retire(pool, wt, task, pushed)
             retired += 1
+    try:
+        removed = pool.uploads.cleanup()
+        if removed:
+            log.info("housekeeping: removed %d unused uploads", removed)
+    except Exception:
+        log.exception("upload cleanup failed")
     if stripped or retired:
         log.info("housekeeping: stripped %d heavy dirs, retired %d working copies", stripped, retired)
     return {"stripped": stripped, "retired": retired}
