@@ -328,6 +328,62 @@ class UploadStore:
                 lines.append(f"    ... and {u['files'] - len(names)} more files")
         return "\n".join(lines) + "\n"
 
+    # ---- files the agents hand back ------------------------------------
+
+    def outbox(self, task_id: str) -> Path:
+        """Folder where an agent puts files meant for the owner. It lives outside the task's git working copy."""
+        return self.root.parent / "outbox" / task_id
+
+    def adopt_outbox(self, task_id: str, goal: str, save_to: str | None = None) -> dict[str, Any] | None:
+        """Move what the agent left in its outbox into the storage: into upload `save_to` if it exists (never
+        overwriting a file: a clash gets a suffix), else into a new upload. Limits apply to agent files too."""
+        box = self.outbox(task_id)
+        if not box.is_dir():
+            return None
+        files: list[tuple[Path, Path]] = []
+        for cur, dirs, names in os.walk(box, followlinks=False):
+            if ".git" in dirs:
+                dirs.remove(".git")
+            for n in names:
+                p = Path(cur) / n
+                if p.is_symlink():
+                    continue
+                try:
+                    files.append((p, safe_relpath(p.relative_to(box).as_posix())))
+                except UploadError:
+                    continue
+        if not files:
+            shutil.rmtree(box, ignore_errors=True)
+            return None
+        created = False
+        target = save_to if save_to and self.exists(save_to) else None
+        if target is None:
+            target = self.create(f"Результат: {' '.join(goal.split())[:50]}", note=f"создано агентом, задача {task_id}")["id"]
+            created = True
+        root = self.root / target
+        total = self.total_bytes()
+        count = tree_size(root)[1]
+        saved: list[str] = []
+        skipped: list[str] = []
+        for src, rel in files:
+            size = src.stat().st_size
+            if size > MAX_FILE_BYTES or total + size > MAX_TOTAL_BYTES or count >= MAX_FILES_PER_UPLOAD:
+                skipped.append(rel.as_posix())
+                continue
+            dest = root / rel
+            if dest.exists() or dest.is_dir():
+                dest = dest.with_name(f"{dest.stem}-{task_id[:6]}{dest.suffix}")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest)
+            total += size
+            count += 1
+            saved.append(dest.relative_to(root).as_posix())
+        shutil.rmtree(box, ignore_errors=True)
+        if created and not saved:
+            self.delete(target)
+            return {"upload_id": None, "saved": [], "count": 0, "skipped": skipped[:20]}
+        return {"upload_id": target, "saved": saved[:50], "count": len(saved), "skipped": skipped[:20]}
+
     # ---- projects ------------------------------------------------------
 
     def make_project(self, upload_id: str) -> Path:

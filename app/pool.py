@@ -73,6 +73,15 @@ ROLE_TEXT = {
     ),
 }
 
+SCRATCH = "scratch"  # a task without a repository: the agent works on attached files and answers
+
+ROLE_TEXT["scratch"] = (
+    "You are an assistant working for the owner. Do what the goal below asks. This working folder is empty scratch "
+    "space, not a repository: do not look for a project here. Files the owner attached are listed below (read them "
+    "from there). Put your answer in your final message. If the goal asks you to create, convert, edit or write files "
+    "for the owner, save them in the output folder given below and mention their names in your answer."
+)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -148,11 +157,16 @@ class RunResult:
 Runner = Callable[..., Awaitable[RunResult]]
 
 
-def build_prompt(task: dict[str, Any], materials: str = "") -> str:
+def build_prompt(task: dict[str, Any], materials: str = "", outbox: str = "") -> str:
     stage = task.get("stage")
-    key = stage if stage in ("review", "rework") else task["role"]
+    scratch = task.get("repo") == SCRATCH
+    key = "scratch" if scratch else stage if stage in ("review", "rework") else task["role"]
     text = ROLE_TEXT[key].replace("{base}", task["base_branch"])
-    allowed = "" if stage == "review" else f"Allowed file patterns: {', '.join(task['allowed_files'])}\n"
+    allowed = "" if stage == "review" or scratch else f"Allowed file patterns: {', '.join(task['allowed_files'])}\n"
+    if outbox:
+        materials += (f"\nOutput folder for files meant for the owner: {outbox}\n"
+                      + ("" if scratch else "(Repository changes stay in the working copy; only files for the owner go there, "
+                                            "and only if the goal asks for such files.)\n"))
     return (
         f"{text}\n\n"
         f"Goal:\n{task['goal']}\n\n"
@@ -346,7 +360,8 @@ class Pool:
         # Databases created before these columns existed get them added in place.
         existing = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
         for column in ("model TEXT", "started_at REAL", "pipeline_id TEXT", "stage TEXT",
-                       "round INTEGER NOT NULL DEFAULT 1", "base_ref TEXT", "parent_id TEXT", "uploads TEXT"):
+                       "round INTEGER NOT NULL DEFAULT 1", "base_ref TEXT", "parent_id TEXT", "uploads TEXT",
+                       "save_to TEXT", "origin TEXT"):
             if column.split()[0] not in existing:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {column}")
         conn.close()
@@ -623,9 +638,11 @@ class Pool:
         review_model: str | None = None,
         max_rounds: int = MAX_ROUNDS_DEFAULT,
         uploads: list[str] | None = None,
+        save_to: str | None = None,
+        origin: str | None = None,
     ) -> str:
         return self.submit_with_info(role, goal, repo, allowed_files, base_branch, test_cmd, model,
-                                     review, review_model, max_rounds, uploads)["task_id"]
+                                     review, review_model, max_rounds, uploads, save_to, origin)["task_id"]
 
     def submit_with_info(
         self,
@@ -640,6 +657,8 @@ class Pool:
         review_model: str | None = None,
         max_rounds: int = MAX_ROUNDS_DEFAULT,
         uploads: list[str] | None = None,
+        save_to: str | None = None,
+        origin: str | None = None,
     ) -> dict[str, Any]:
         """Queue a task. With review=True it becomes a pipeline: develop, then an automatic review by a reviewer
         agent, with up to max_rounds of rework until the reviewer approves. Returns the task id and any warnings."""
@@ -647,6 +666,15 @@ class Pool:
             raise ValueError(f"role must be one of {', '.join(ROLES)}")
         if not goal or not goal.strip():
             raise ValueError("goal is empty")
+        scratch = repo == SCRATCH
+        if scratch:
+            if review:
+                raise ValueError("a task without a repository cannot be reviewed")
+            allowed_files = allowed_files or ["*"]
+            if role == "reviewer":
+                raise ValueError("a reviewer needs a repository")
+        if save_to and not self.uploads.exists(save_to):
+            raise ValueError(f"unknown upload {save_to} for save_to")
         uploads = list(dict.fromkeys(uploads or []))
         for upload_id in uploads:
             if not self.uploads.exists(upload_id):
@@ -657,8 +685,8 @@ class Pool:
                 repo = str(self.uploads.make_project(repo[len("upload:"):]))
             except uploads_mod.UploadError as exc:
                 raise ValueError(str(exc))
-        elif not repo.startswith("https://") and not (self.allow_local_repos and Path(repo).is_dir()):
-            raise ValueError("repo must be an https:// URL, or upload:<id> for an uploaded project")
+        elif not scratch and not repo.startswith("https://") and not (self.allow_local_repos and Path(repo).is_dir()):
+            raise ValueError("repo must be an https:// URL, upload:<id> for an uploaded project, or scratch for files only")
         if not allowed_files or not all(isinstance(p, str) and p for p in allowed_files):
             raise ValueError("allowed_files must be a non-empty list of glob patterns")
         model = (model or "").strip() or None
@@ -672,23 +700,24 @@ class Pool:
                 raise ValueError("max_rounds must be a whole number from 1 to 5")
             if review_model:
                 self._check_model(review_model)
-        warnings = self._overlap_warnings(repo, allowed_files)
+        warnings = [] if scratch else self._overlap_warnings(repo, allowed_files)
         if review and not self._has_usable_reviewer():
             warnings.append("no reviewer agent is available yet: the review will wait in the queue")
-        with self._repo_lock:
-            repo_path = git_ops.ensure_repo(repo, self.repos, self.push_token)
-            git_ops.check_branch(repo_path, base_branch)
+        if not scratch:
+            with self._repo_lock:
+                repo_path = git_ops.ensure_repo(repo, self.repos, self.push_token)
+                git_ops.check_branch(repo_path, base_branch)
         task_id = uuid.uuid4().hex[:12]
         t = time.time()
         conn = self._db()
         try:
             conn.execute(
                 "INSERT INTO tasks (id, role, goal, repo, base_branch, allowed_files, test_cmd, model, status,"
-                " pipeline_id, stage, round, uploads, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, 1, ?, ?, ?)",
+                " pipeline_id, stage, round, uploads, save_to, origin, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, 1, ?, ?, ?, ?, ?)",
                 (task_id, role, goal, repo, base_branch, json.dumps(allowed_files), test_cmd, model,
                  task_id if review else None, "develop" if review else None,
-                 json.dumps(uploads) if uploads else None, t, t),
+                 json.dumps(uploads) if uploads else None, save_to or None, origin, t, t),
             )
             if review:
                 conn.execute(
@@ -899,6 +928,7 @@ class Pool:
         finally:
             # Free the space first: on a full disk the database write below would fail otherwise.
             housekeeping.strip_heavy(self.worktrees / task_id)  # virtualenvs etc. are rebuilt by the next test run
+            shutil.rmtree(self.uploads.outbox(task_id), ignore_errors=True)  # whatever an unfinished attempt left
             self._exec("UPDATE accounts SET busy_task = NULL, last_used = ? WHERE id = ?", (time.time(), account_id))
 
     async def _run(self, task_id: str, account_id: str) -> None:
@@ -908,16 +938,27 @@ class Pool:
         repo_path = git_ops.repo_dir(self.repos, task["repo"])
         wt = self.worktrees / task_id
         branch = f"pool/{task_id}"
-        await asyncio.to_thread(
-            git_ops.prepare_worktree, repo_path, wt, task_id, base, self.push_token, self.nohooks, task["base_ref"]
-        )
-        self._exec("UPDATE tasks SET branch = ? WHERE id = ?", (branch, task_id))
+        scratch = task["repo"] == SCRATCH
+        if scratch:
+            shutil.rmtree(wt, ignore_errors=True)
+            wt.mkdir(parents=True)
+            branch = None
+        else:
+            await asyncio.to_thread(
+                git_ops.prepare_worktree, repo_path, wt, task_id, base, self.push_token, self.nohooks, task["base_ref"]
+            )
+            self._exec("UPDATE tasks SET branch = ? WHERE id = ?", (branch, task_id))
+        outbox = None
+        if task.get("stage") != "review":
+            outbox = self.uploads.outbox(task_id)
+            shutil.rmtree(outbox, ignore_errors=True)
+            outbox.mkdir(parents=True)
 
         model = task["model"] or self._model_for(account_id)  # the task's own model beats the account's
         materials = await asyncio.to_thread(self.uploads.prompt_block, task["uploads"])
         await asyncio.to_thread(self.uploads.touch, task["uploads"])
         res = await self.runner(
-            prompt=build_prompt(task, materials),
+            prompt=build_prompt(task, materials, str(outbox) if outbox else ""),
             workdir=wt,
             env=self._agent_env(account_id),
             timeout=TASK_TIMEOUT_S,
@@ -944,6 +985,8 @@ class Pool:
             })
 
         self._mark_ok(account_id)
+        if scratch:
+            return await self._finish_scratch(task, account_id, extract_summary(res.stdout), model)
         await self._finish_success(task, account_id, extract_summary(res.stdout), wt, branch, model)
 
     async def _finish_success(
@@ -981,6 +1024,9 @@ class Pool:
         for violation in violations:
             self._event("violation", account_id, task_id, violation)
         head = await asyncio.to_thread(git_ops.head_sha, wt)
+        outputs = None
+        if task.get("stage") != "review" and not violations:
+            outputs = await asyncio.to_thread(self.uploads.adopt_outbox, task_id, task["goal"], task.get("save_to"))
 
         report = {
             "summary": summary,
@@ -992,11 +1038,20 @@ class Pool:
             "head": head,
             "pushed": pushed,
             "push_error": push_error,
+            "outputs": outputs,
             "account": account_id,
             "model": model,
             "attempts": task["attempts"],
         }
         self._finish(task_id, "failed" if violations else "done", report)
+
+    async def _finish_scratch(self, task: dict[str, Any], account_id: str, summary: str, model: str | None) -> None:
+        outputs = await asyncio.to_thread(self.uploads.adopt_outbox, task["id"], task["goal"], task["save_to"])
+        self._finish(task["id"], "done", {
+            "summary": summary, "changed_files": [], "stats": "", "violations": [], "tests": None, "branch": None,
+            "head": None, "pushed": False, "push_error": None, "outputs": outputs,
+            "account": account_id, "model": model, "attempts": task["attempts"],
+        })
 
     async def _run_tests(self, wt: Path, cmd: str) -> tuple[bool, str]:
         proc = await asyncio.create_subprocess_shell(
@@ -1049,11 +1104,11 @@ class Pool:
         t = time.time()
         self._exec(
             "INSERT INTO tasks (id, role, goal, repo, base_branch, allowed_files, test_cmd, model, status, pipeline_id,"
-            " stage, round, base_ref, parent_id, uploads, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
+            " stage, round, base_ref, parent_id, uploads, save_to, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task_id, role, goal, parent["repo"], parent["base_branch"], json.dumps(allowed), parent["test_cmd"], model,
              pipe["id"], stage, round_no, base_ref, parent["id"],
-             json.dumps(parent["uploads"]) if parent.get("uploads") else None, t, t),
+             json.dumps(parent["uploads"]) if parent.get("uploads") else None, parent.get("save_to"), t, t),
         )
         return task_id
 
@@ -1231,6 +1286,31 @@ class Pool:
     def task_view(self, task_id: str) -> dict[str, Any] | None:
         task = self.get_task(task_id)
         return self.effective_task(task) if task else None
+
+    def list_requests(self, limit: int = 15) -> list[dict[str, Any]]:
+        """Tasks the owner started from the dashboard's task panel, newest first, with the agent's answer."""
+        conn = self._db()
+        try:
+            ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM tasks WHERE origin = 'panel' ORDER BY created_at DESC LIMIT ?", (limit,))]
+        finally:
+            conn.close()
+        out = []
+        for task_id in ids:
+            t = self.task_view(task_id)
+            if t is None:
+                continue
+            report = t["report"] or {}
+            out.append({
+                "id": t["id"], "status": t["status"], "goal": t["goal"], "model": t["model"], "role": t["role"],
+                "account_id": t["account_id"], "created_at": t["created_at"], "started_at": t["started_at"],
+                "updated_at": t["updated_at"], "repo": t["repo"], "uploads": t["uploads"],
+                "summary": (report.get("summary") or "")[:8000],
+                "error": report.get("error") or report.get("last_error") or report.get("reason"),
+                "outputs": report.get("outputs"), "branch": report.get("branch") or t.get("branch"),
+                "pushed": report.get("pushed"), "stage": (t.get("pipeline") or {}).get("stage"),
+            })
+        return out
 
     # ---- models: guidance and measured history --------------------------------------------------------------------
 

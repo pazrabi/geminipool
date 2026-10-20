@@ -53,6 +53,17 @@ them (stages of a pipeline inherit them). `repo="upload:<id>"` makes an uploaded
 a zip. MCP `list_uploads` shows what exists. API: `GET/POST /api/uploads`, `PUT /api/uploads/<id>/file?path=…`,
 `GET|POST|DELETE /api/uploads/<id>`, `DELETE /api/uploads/<id>/file?path=…`, `GET /api/uploads/<id>/download[?branch=…]` (all need the token).
 
+### Task panel and files handed back
+
+The header button **Задача** opens a second right-hand drawer (only one drawer is open at a time): a text box, role, model,
+files to attach (from the storage, or uploaded on the spot), and what to work on: **files only** (`repo="scratch"`: the agent
+answers and may create files; no repository, no review) or **a project from the storage** (optionally with review). Requests
+show under «Мои запросы» with the agent's answer, and the files the agent made. API: `POST|GET /api/requests`, `GET /api/models`.
+Every task that is not a review stage gets an **output folder** (`<POOL_DATA>/outbox/<task>`, named in its prompt, outside the
+git working copy). After the task the pool moves what the agent left there into the storage: into the upload named by
+`save_to` (never overwriting a file: a clash gets a suffix) or into a new unpinned upload; limits apply; the report has
+`outputs` (`upload_id`, `saved`, `skipped`). `submit_task` accepts `repo="scratch"` and `save_to` too.
+
 ## Adding agents (Google accounts)
 
 On your Mac: `scripts/add_account.sh acc2 [developer|reviewer|debugger]`. It registers the agent in the pool, starts agy's

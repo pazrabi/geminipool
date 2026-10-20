@@ -97,16 +97,16 @@ button.small { padding: 0 8px; line-height: 1.4; }
 button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
 .file-list .flist { font-size: 12.5px; color: var(--muted); margin-top: 6px; word-break: break-all; }
 main { transition: margin .2s ease; }
-#storage-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 440px; max-width: 100vw; overflow-y: auto; padding: 16px;
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 440px; max-width: 100vw; overflow-y: auto; padding: 16px;
   background: var(--bg); border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0,0,0,.25);
   transform: translateX(105%); transition: transform .2s ease; z-index: 20; visibility: hidden; }
-#app[hidden] ~ #storage-panel { display: none; }
-body.storage-open #storage-panel { transform: none; visibility: visible; }
-#storage-panel .sp-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 16px; }
-#storage-panel h2 { margin-top: 20px; }
+#app[hidden] ~ .drawer { display: none; }
+.drawer.open { transform: none; visibility: visible; }
+#storage-panel .sp-head, .drawer .sp-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 16px; }
+#storage-panel h2, #task-panel h2 { margin-top: 20px; }
 #storage-panel .file-list { grid-template-columns: 1fr; }
-#to-storage.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-@media (min-width: 1000px) { body.storage-open main { margin-left: 16px; margin-right: 456px; max-width: none; } }
+#to-storage.on, #to-task.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+@media (min-width: 1000px) { body.drawer-open main { margin-left: 16px; margin-right: 456px; max-width: none; } }
 @media (max-width: 640px) {
   .counters { grid-template-columns: repeat(2, 1fr); }
   .task .head { grid-template-columns: auto 1fr; }
@@ -114,6 +114,14 @@ body.storage-open #storage-panel { transform: none; visibility: visible; }
   .task .meta { grid-column: 1 / -1; text-align: left; }
   .kv { grid-template-columns: 1fr; }
 }
+#task-panel textarea { width: 100%; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); resize: vertical; }
+#task-panel .rq-sec { margin-top: 14px; font-weight: 600; font-size: 13px; color: var(--muted); }
+#task-panel .rq-line { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; font-size: 14px; }
+#task-panel .rq-attach { max-height: 150px; overflow-y: auto; margin-top: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--card); }
+#task-panel .rq-attach label { display: flex; gap: 6px; font-size: 13.5px; }
+#task-panel select { max-width: 100%; }
+.req { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 8px; }
+.req .goal { margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -133,7 +141,8 @@ body.storage-open #storage-panel { transform: none; visibility: visible; }
     <span id="conn" class="pill s-idle">подключение…</span>
     <span class="spacer"></span>
     <span class="muted" id="updated"></span>
-    <button id="to-storage" title="Перейти к файлам для агентов">Хранилище</button>
+    <button id="to-task" title="Написать задачу пулу">Задача</button>
+    <button id="to-storage" title="Файлы для агентов">Хранилище</button>
     <button id="drain" title="Не запускать новые задачи, чтобы безопасно обновить сервис">Пауза приёма задач</button>
     <button id="logout">Выйти</button>
   </header>
@@ -149,7 +158,7 @@ body.storage-open #storage-panel { transform: none; visibility: visible; }
   <h2>Ошибки агентов</h2>
   <div id="events"></div>
 </main>
-<aside id="storage-panel" aria-label="Хранилище" aria-hidden="true">
+<aside id="storage-panel" class="drawer" aria-label="Хранилище" aria-hidden="true">
   <div class="sp-head"><b>Хранилище</b><button id="storage-close" title="Закрыть">×</button></div>
   <div class="drop" id="drop">
     <div><b>Перетащите сюда фото, видео, документы, правила или папку проекта</b></div>
@@ -166,6 +175,29 @@ body.storage-open #storage-panel { transform: none; visibility: visible; }
     <input type="file" id="in-dir" webkitdirectory hidden>
   </div>
   <div id="filelist"></div>
+</aside>
+<aside id="task-panel" class="drawer" aria-label="Задача" aria-hidden="true">
+  <div class="sp-head"><b>Новая задача</b><button id="task-close" title="Закрыть">×</button></div>
+  <textarea id="rq-goal" rows="5" maxlength="20000" placeholder="Что сделать? Например: исправь ошибки в приложенном файле и сохрани результат в хранилище"></textarea>
+  <div class="rq-line">
+    <label>Роль <select id="rq-role"><option value="developer">Разработчик</option><option value="debugger">Отладчик</option></select></label>
+    <label>Модель <select id="rq-model"><option value="">по умолчанию</option></select></label>
+  </div>
+  <div class="rq-sec">Приложить файлы из хранилища</div>
+  <div class="rq-attach" id="rq-attach"></div>
+  <div class="rq-line"><button id="rq-upload">Загрузить и приложить…</button><span class="muted" id="rq-note"></span></div>
+  <input type="file" id="rq-file" multiple hidden>
+  <div class="rq-sec">Над чем работать</div>
+  <div class="rq-line"><label><input type="radio" name="rq-mode" value="files" checked> Только файлы: ответ и новые файлы</label></div>
+  <div class="rq-line"><label><input type="radio" name="rq-mode" value="project"> Проект из хранилища</label>
+    <select id="rq-project"></select></div>
+  <div class="rq-line" id="rq-review-line" hidden><label><input type="checkbox" id="rq-review"> с ревью (разработчик, ревьюер, доработка)</label></div>
+  <div class="rq-sec">Куда положить файлы, которые создаст агент</div>
+  <div class="rq-line"><select id="rq-save"><option value="">в новую загрузку</option></select></div>
+  <div class="rq-line"><button class="primary" id="rq-send">Отправить</button></div>
+  <div class="err" id="rq-err"></div>
+  <h2>Мои запросы</h2>
+  <div id="rq-list"></div>
 </aside>
 
 
@@ -754,7 +786,7 @@ body.storage-open #storage-panel { transform: none; visibility: visible; }
       if (sig === filesSig) return;
       var box = document.getElementById("filelist");
       if (document.activeElement && box.contains(document.activeElement)) return;  // do not rebuild under a focused control
-      filesSig = sig; filesData = d; renderFiles();
+      filesSig = sig; filesData = d; renderFiles(); renderRqForm();
     }).catch(function (e) { if (e.auth) return; });
   }
   function patchUpload(id, obj) {
@@ -944,15 +976,136 @@ body.storage-open #storage-panel { transform: none; visibility: visible; }
     document.getElementById("token").value = "";
     store(token); refresh();
   };
-  function setStorage(open) {
-    document.body.classList.toggle("storage-open", open);
-    document.getElementById("to-storage").classList.toggle("on", open);
-    document.getElementById("storage-panel").setAttribute("aria-hidden", open ? "false" : "true");
-    try { localStorage.setItem("pool-storage-open", open ? "1" : "0"); } catch (e) {}
+  var PANELS = { storage: ["storage-panel", "to-storage"], task: ["task-panel", "to-task"] };
+  function setPanel(name) {  // one drawer at a time: "storage", "task" or null
+    Object.keys(PANELS).forEach(function (k) {
+      var on = k === name;
+      document.getElementById(PANELS[k][0]).classList.toggle("open", on);
+      document.getElementById(PANELS[k][0]).setAttribute("aria-hidden", on ? "false" : "true");
+      document.getElementById(PANELS[k][1]).classList.toggle("on", on);
+    });
+    document.body.classList.toggle("drawer-open", !!name);
+    try { localStorage.setItem("pool-panel", name || ""); } catch (e) {}
+    if (name === "task") { loadModelsForForm(); loadRequests(); renderRqForm(); }
+    if (name === "storage") { filesSig = ""; loadFiles(); }
   }
-  document.getElementById("to-storage").onclick = function () { setStorage(!document.body.classList.contains("storage-open")); };
-  document.getElementById("storage-close").onclick = function () { setStorage(false); };
-  try { if (localStorage.getItem("pool-storage-open") === "1") setStorage(true); } catch (e) {}
+  function currentPanel() { return document.getElementById("task-panel").classList.contains("open") ? "task" : document.getElementById("storage-panel").classList.contains("open") ? "storage" : null; }
+  document.getElementById("to-storage").onclick = function () { setPanel(currentPanel() === "storage" ? null : "storage"); };
+  document.getElementById("to-task").onclick = function () { setPanel(currentPanel() === "task" ? null : "task"); };
+  document.getElementById("storage-close").onclick = function () { setPanel(null); };
+  document.getElementById("task-close").onclick = function () { setPanel(null); };
+
+  // ---- task panel ----------------------------------------------------------
+  var rqChecked = {}, rqModelsLoaded = false, rqSig = "", rqData = [];
+  function loadModelsForForm() {
+    if (rqModelsLoaded) return;
+    api("/api/models").then(function (d) {
+      rqModelsLoaded = true;
+      var sel = document.getElementById("rq-model");
+      d.models.forEach(function (m) { var o = el("option", "", m.name || m.id); o.value = m.id; sel.appendChild(o); });
+    }).catch(function () {});
+  }
+  function fillSelect(sel, items, first) {
+    var keep = sel.value;
+    sel.textContent = "";
+    if (first) { var o0 = el("option", "", first); o0.value = ""; sel.appendChild(o0); }
+    items.forEach(function (u) { var o = el("option", "", u.name + " (" + bytes(u.size) + ")"); o.value = u.id; sel.appendChild(o); });
+    if (keep) sel.value = keep;
+  }
+  function renderRqForm() {
+    if (!filesData) return;
+    var ups = filesData.uploads, box = document.getElementById("rq-attach");
+    box.textContent = "";
+    if (!ups.length) box.appendChild(el("div", "muted", "В хранилище пока пусто"));
+    ups.forEach(function (u) {
+      var lab = el("label", ""), cb = el("input", ""); cb.type = "checkbox"; cb.checked = !!rqChecked[u.id];
+      cb.onchange = function () { rqChecked[u.id] = cb.checked; };
+      lab.appendChild(cb); lab.appendChild(el("span", "", u.name + " · " + bytes(u.size))); box.appendChild(lab);
+    });
+    fillSelect(document.getElementById("rq-project"), ups, "");
+    fillSelect(document.getElementById("rq-save"), ups, "в новую загрузку");
+  }
+  function modeIsProject() { return document.querySelector('input[name="rq-mode"]:checked').value === "project"; }
+  document.querySelectorAll('input[name="rq-mode"]').forEach(function (r) {
+    r.onchange = function () { document.getElementById("rq-review-line").hidden = !modeIsProject(); };
+  });
+  function sendRequest() {
+    var err = document.getElementById("rq-err"), btn = document.getElementById("rq-send");
+    err.textContent = "";
+    var goal = document.getElementById("rq-goal").value.trim();
+    if (!goal) { err.textContent = "Напишите, что нужно сделать"; return; }
+    var project = modeIsProject() ? document.getElementById("rq-project").value : "";
+    if (modeIsProject() && !project) { err.textContent = "Выберите проект из хранилища"; return; }
+    var body = { goal: goal, role: document.getElementById("rq-role").value,
+      model: document.getElementById("rq-model").value || null,
+      uploads: Object.keys(rqChecked).filter(function (k) { return rqChecked[k]; }),
+      project: project || null, save_to: document.getElementById("rq-save").value || null,
+      review: modeIsProject() && document.getElementById("rq-review").checked };
+    btn.disabled = true;
+    api("/api/requests", { method: "POST", body: JSON.stringify(body) })
+      .then(function () { document.getElementById("rq-goal").value = ""; rqChecked = {}; renderRqForm(); rqSig = ""; loadRequests(); refresh(); })
+      .catch(function (e) { err.textContent = "Не удалось отправить: " + e.message; })
+      .then(function () { btn.disabled = false; });
+  }
+  document.getElementById("rq-send").onclick = sendRequest;
+  document.getElementById("rq-upload").onclick = function () { document.getElementById("rq-file").click(); };
+  document.getElementById("rq-file").onchange = function (ev) {
+    var files = Array.prototype.slice.call(ev.target.files); ev.target.value = "";
+    if (!files.length) return;
+    var note = document.getElementById("rq-note"); note.textContent = "Загрузка…";
+    var uploadId;
+    api("/api/uploads", { method: "POST", body: JSON.stringify({ name: files[0].name, pinned: false }) }).then(function (u) {
+      uploadId = u.id;
+      return files.reduce(function (chain, f) {
+        return chain.then(function () { return putFile(uploadId, f, f.name, function () {}); });
+      }, Promise.resolve());
+    }).then(function () { rqChecked[uploadId] = true; note.textContent = "Загружено и приложено"; filesSig = ""; loadFiles(); })
+      .catch(function (e) { note.textContent = "Не удалось: " + e.message; });
+  };
+  function loadRequests() {
+    api("/api/requests").then(function (d) {
+      var sig = JSON.stringify(d.requests);
+      rqData = d.requests;
+      if (sig === rqSig) return;
+      rqSig = sig; renderRequests();
+    }).catch(function () {});
+  }
+  function renderRequests() {
+    var box = document.getElementById("rq-list"); box.textContent = "";
+    if (!rqData.length) { box.appendChild(el("div", "empty", "Запросов пока нет")); return; }
+    rqData.forEach(function (r) {
+      var card = el("div", "req"), top = el("div", "top");
+      top.appendChild(pill("s-" + r.status, STATUS[r.status] || r.status));
+      if (r.model) top.appendChild(el("span", "muted", shortModel(r.model)));
+      if (r.account_id) top.appendChild(el("span", "muted", r.account_id));
+      if (r.status === "running" && r.started_at) top.appendChild(liveSpan(r.started_at, "идёт "));
+      else if (r.status === "queued") top.appendChild(el("span", "muted", "ждёт очереди"));
+      card.appendChild(top);
+      card.appendChild(el("div", "goal", r.goal.length > 160 ? r.goal.slice(0, 160) + "…" : r.goal));
+      if (r.summary) { var det = el("details", "row"); det.appendChild(el("summary", "muted", "Ответ агента")); det.appendChild(pre(r.summary)); det.open = r.status === "done"; card.appendChild(det); }
+      if (r.error && r.status !== "done") card.appendChild(el("div", "err", String(r.error).slice(0, 300)));
+      var ops = el("div", "row ops");
+      if (r.outputs && r.outputs.upload_id) {
+        card.appendChild(el("div", "row", "Файлы агента в хранилище: " + r.outputs.saved.join(", ") + (r.outputs.skipped && r.outputs.skipped.length ? " (не сохранены из-за лимита: " + r.outputs.skipped.join(", ") + ")" : "")));
+        var dl = el("button", "", "Скачать файлы"); dl.onclick = function () { downloadUpload(r.outputs.upload_id, "result"); }; ops.appendChild(dl);
+        var op = el("button", "", "Открыть хранилище"); op.onclick = function () { setPanel("storage"); }; ops.appendChild(op);
+      }
+      var m = /\/uploads\/([0-9a-f]{12})$/.exec(r.repo || "");
+      if (m && r.status === "done" && r.branch) {
+        card.appendChild(el("div", "row muted", "Ветка с правками: " + r.branch + " (лежит в проекте в хранилище)"));
+        var bd = el("button", "", "Скачать ветку"); bd.onclick = function () { downloadUpload(m[1], "project", r.branch); }; ops.appendChild(bd);
+      }
+      if (ops.childNodes.length) card.appendChild(ops);
+      box.appendChild(card);
+    });
+  }
+  setInterval(function () {
+    if (!token) return;
+    var active = rqData.some(function (r) { return r.status === "queued" || r.status === "running"; });
+    if (currentPanel() === "task" || active) loadRequests();
+  }, 4000);
+
+  try { var saved = localStorage.getItem("pool-panel"); if (saved === "storage" || saved === "task") setPanel(saved); } catch (e) {}
   document.getElementById("drain").onclick = toggleDrain;
   document.getElementById("logout").onclick = function () { store(null); token = null; data = null; lastSig = ""; showLogin(""); };
   document.addEventListener("visibilitychange", function () { if (!document.hidden && token) refresh(); });
