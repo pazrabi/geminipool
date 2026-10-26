@@ -69,7 +69,7 @@ git working copy). After the task the pool moves what the agent left there into 
 On your Mac: `scripts/add_account.sh acc2 [developer|reviewer|debugger]`. It registers the agent in the pool, starts agy's
 Google sign-in on the server, opens the sign-in page, asks you to paste the code Google shows, and checks the login.
 The dashboard has the same pieces: **+ Добавить агента**, a card state «Нужен вход» with the command to run, and buttons to
-turn an agent off or delete it. An agent takes no task until its login exists. `POOL_MAX_CONCURRENT` (server env, now 2) caps
+turn an agent off or delete it. An agent takes no task until its login exists. `POOL_MAX_CONCURRENT` (server env, now 5) caps
 how many tasks run at once on the small server. Per-agent `proxy` in `accounts.json` routes one agent through an HTTPS proxy.
 
 ## Separate outgoing addresses
