@@ -202,6 +202,14 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(task["status"], "done", task["report"])
         self.assertEqual(task["repo"], str(self.store.root / proj["id"]))
 
+    def test_mcp_names_a_missing_required_argument(self):
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "submit_task", "arguments": {"goal": "x", "repo": "scratch", "allowed_files": []}}}
+        status, data = self.http("POST", "/mcp", body)
+        self.assertEqual(status, 200)
+        self.assertTrue(data["result"]["isError"])
+        self.assertIn("missing required argument: role", data["result"]["content"][0]["text"])
+
     def test_models_endpoint_and_mcp_schema(self):
         status, data = self.http("GET", "/api/models")
         self.assertEqual(status, 200)

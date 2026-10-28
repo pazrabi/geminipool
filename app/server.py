@@ -226,7 +226,10 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
             try:
                 data = _call_tool(params.get("name", ""), params.get("arguments") or {})
                 result = {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False, default=str)}]}
-            except (ValueError, KeyError) as exc:
+            except KeyError as exc:
+                result = {"content": [{"type": "text", "text": f"error: missing required argument: {exc.args[0]}"}],
+                          "isError": True}
+            except ValueError as exc:
                 result = {"content": [{"type": "text", "text": f"error: {exc}"}], "isError": True}
         else:
             return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": f"method not found: {method}"}}
