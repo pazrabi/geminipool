@@ -123,9 +123,20 @@ main { transition: margin .2s ease; }
 #task-panel select { max-width: 100%; }
 .req { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 8px; }
 .req .goal { margin-top: 6px; }
+.tool-tabs { display: flex; align-items: center; gap: 10px; height: 56px; padding: 0 20px; background: var(--card);
+  border-bottom: 1px solid var(--line); overflow-x: auto; white-space: nowrap; }
+.tool-tab { display: inline-flex; align-items: center; padding: 8px 16px; border-radius: 999px; color: var(--muted);
+  text-decoration: none; font-weight: 600; border: 1px solid var(--line); background: var(--bg); }
+.tool-tab:hover { color: var(--ink); border-color: var(--accent); }
+.tool-tab.is-active { color: var(--ink); background: transparent; border-color: transparent; font-size: 1.35rem; font-weight: 800; pointer-events: none; }
+@media (max-width: 600px) { .tool-tabs { padding: 0 12px; } }
 </style>
 </head>
 <body>
+<nav class="tool-tabs" aria-label="Инструменты">
+  <a class="tool-tab is-active" aria-current="page">Gemini Pool</a>
+  <a class="tool-tab" href="https://droidhub.molokohub.site/" rel="noopener">DroidHub</a>
+</nav>
 <div id="login" hidden>
   <h1>Gemini Pool</h1>
   <p class="muted">Введите токен доступа (тот же, что в заголовке Authorization у MCP). Он хранится только в этом браузере.</p>
