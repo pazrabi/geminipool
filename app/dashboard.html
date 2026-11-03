@@ -1129,11 +1129,24 @@ main { transition: margin .2s ease; }
 
   try { var saved = localStorage.getItem("pool-panel"); if (saved === "storage" || saved === "task") setPanel(saved); } catch (e) {}
   document.getElementById("drain").onclick = toggleDrain;
-  document.getElementById("logout").onclick = function () { store(null); token = null; data = null; lastSig = ""; showLogin(""); };
+  var ssoLogout = "";
+  document.getElementById("logout").onclick = function () {
+    store(null); token = null; data = null; lastSig = "";
+    if (ssoLogout) { location.href = ssoLogout; return; }  // single sign-on: log out everywhere, or the cookie logs us straight back in
+    showLogin("");
+  };
   document.addEventListener("visibilitychange", function () { if (!document.hidden && token) refresh(); });
 
-  token = load();
-  if (token) refresh(); else showLogin("");
+  // Behind the single sign-on gate the server hands over the token for a valid sign-in cookie: no second login form.
+  function trySso() {
+    return fetch("/api/sso/session", { credentials: "same-origin" }).then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { if (j && j.token) { ssoLogout = j.logout_url || ""; token = j.token; store(token); return true; } return false; })
+      .catch(function () { return false; });
+  }
+  trySso().then(function (ok) {
+    if (!ok) token = load();
+    if (token) refresh(); else showLogin("");
+  });
 })();
 </script>
 </body>

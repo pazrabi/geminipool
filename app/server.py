@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
+import sso
 import uploads as uploads_mod
 from oauth import OAuth, OAuthError, redirect_matches
 from pool import ROLES, Pool
@@ -316,6 +317,19 @@ class Handler(BaseHTTPRequestHandler):
         """The static pool token: used by Claude Code and the dashboard."""
         return bool(_token) and hmac.compare_digest(self._bearer().encode(), _token.encode())
 
+    def _sso_session(self) -> None:
+        """The dashboard asks here when it holds no token. A valid single sign-on cookie (signed with a secret only
+        this server and DroidHub know) means the owner already logged in once, so the dashboard gets the pool token
+        instead of showing its own login form. Nothing else accepts the cookie: MCP and the API keep requiring the token."""
+        secret = os.environ.get("POOL_SSO_SECRET", "")
+        name = os.environ.get("POOL_SSO_COOKIE", "molokohub_sso")
+        user = sso.user_from_cookie_header(self.headers.get("Cookie", ""), name, secret)
+        # A page on another site must not be able to trigger this, even if the browser would send the cookie.
+        if user is None or self.headers.get("Sec-Fetch-Site", "same-origin") == "cross-site":
+            return self._json(401, {"error": "unauthorized"})
+        log.info("sso session for %s", user)  # _send already marks every answer no-store
+        return self._json(200, {"token": _token, "user": user, "logout_url": os.environ.get("POOL_SSO_LOGOUT_URL", "")})
+
     def _mcp_authorized(self) -> bool:
         """MCP also accepts the access tokens issued by the OAuth flow (Claude custom connectors)."""
         return self._authorized() or (_oauth is not None and _oauth.validate_access(self._bearer()))
@@ -465,6 +479,8 @@ button{{font:inherit;padding:10px 18px;cursor:pointer}}.err{{color:#c8382d}}.mon
         if path in ("/", "/index.html"):
             # The page itself holds no data; every API call below needs the token.
             return self._send(200, DASHBOARD.read_bytes(), "text/html; charset=utf-8")
+        if path == "/api/sso/session":
+            return self._sso_session()
         if path.startswith("/api/"):
             if not self._authorized():
                 return self._json(401, {"error": "unauthorized"})
