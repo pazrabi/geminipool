@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gemini Pool</title>
+<script>
+  // ?embed=1: panel inside the molokohub.site shell (no own tabs bar / logout); remembered per tab
+  (function () {
+    try {
+      if (location.search.indexOf("embed=1") >= 0) sessionStorage.setItem("pool.embed", "1");
+      if (window.self !== window.top && sessionStorage.getItem("pool.embed") === "1") document.documentElement.classList.add("embed");
+    } catch (e) {}
+  })();
+</script>
+<link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+<nav class="tool-tabs" aria-label="Инструменты">
+  <a class="tool-tab is-active" aria-current="page">Gemini Pool</a>
+  <a class="tool-tab" href="https://droidhub.molokohub.site/" rel="noopener">DroidHub</a>
+</nav>
+<div id="login" hidden>
+  <h1>Gemini Pool</h1>
+  <p class="muted">Введите токен доступа (тот же, что в заголовке Authorization у MCP). Он хранится только в этом браузере.</p>
+  <form id="login-form">
+    <input id="token" type="password" placeholder="Токен" autocomplete="current-password" required>
+    <button class="primary" type="submit">Войти</button>
+    <div class="err" id="login-err"></div>
+  </form>
+</div>
+
+<main id="app" hidden>
+  <header>
+    <h1>Gemini Pool</h1>
+    <span id="conn" class="pill s-idle">подключение…</span>
+    <span class="spacer"></span>
+    <span class="muted" id="updated"></span>
+    <button id="to-task" title="Написать задачу пулу">Задача</button>
+    <button id="to-storage" title="Файлы для агентов">Хранилище</button>
+    <button id="drain" title="Не запускать новые задачи, чтобы безопасно обновить сервис">Пауза приёма задач</button>
+    <button id="logout">Выйти</button>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+  <div class="counters" id="counters"></div>
+  <h2>Агенты</h2>
+  <div class="grid" id="accounts"></div>
+  <h2>Конвейеры</h2>
+  <div id="pipelines"></div>
+  <h2>Задачи</h2>
+  <div class="filters" id="filters"></div>
+  <div id="tasks"></div>
+  <h2>Ошибки агентов</h2>
+  <div id="events"></div>
+</main>
+<aside id="storage-panel" class="drawer" aria-label="Хранилище" aria-hidden="true">
+  <div class="sp-head"><b>Хранилище</b><button id="storage-close" title="Закрыть">×</button></div>
+  <div class="drop" id="drop">
+    <div><b>Перетащите сюда фото, видео, документы, правила или папку проекта</b></div>
+    <div class="muted" id="files-hint"></div>
+    <div class="opts">
+      <button id="pick-files">Выбрать файлы</button>
+      <button id="pick-dir">Выбрать папку</button>
+      <input type="text" id="up-name" placeholder="Название" maxlength="80" aria-label="Название">
+      <input type="text" id="up-note" placeholder="Заметка" maxlength="300" aria-label="Заметка">
+      <label><input type="checkbox" id="up-pin"> Постоянный (не удалять автоматически)</label>
+    </div>
+    <div id="up-status"></div>
+    <input type="file" id="in-files" multiple hidden>
+    <input type="file" id="in-dir" webkitdirectory hidden>
+  </div>
+  <div id="filelist"></div>
+</aside>
+<aside id="task-panel" class="drawer" aria-label="Задача" aria-hidden="true">
+  <div class="sp-head"><b>Новая задача</b><button id="task-close" title="Закрыть">×</button></div>
+  <textarea id="rq-goal" rows="5" maxlength="20000" placeholder="Что сделать? Например: исправь ошибки в приложенном файле и сохрани результат в хранилище"></textarea>
+  <div class="rq-line">
+    <label>Роль <select id="rq-role"><option value="developer">Разработчик</option><option value="debugger">Отладчик</option></select></label>
+    <label>Модель <select id="rq-model"><option value="">по умолчанию</option></select></label>
+  </div>
+  <div class="rq-sec">Приложить файлы из хранилища</div>
+  <div class="rq-attach" id="rq-attach"></div>
+  <div class="rq-line"><button id="rq-upload">Загрузить и приложить…</button><span class="muted" id="rq-note"></span></div>
+  <input type="file" id="rq-file" multiple hidden>
+  <div class="rq-sec">Над чем работать</div>
+  <div class="rq-line"><label><input type="radio" name="rq-mode" value="files" checked> Только файлы: ответ и новые файлы</label></div>
+  <div class="rq-line"><label><input type="radio" name="rq-mode" value="project"> Проект из хранилища</label>
+    <select id="rq-project"></select></div>
+  <div class="rq-line" id="rq-review-line" hidden><label><input type="checkbox" id="rq-review"> с ревью (разработчик, ревьюер, доработка)</label></div>
+  <div class="rq-sec">Куда положить файлы, которые создаст агент</div>
+  <div class="rq-line"><select id="rq-save"><option value="">в новую загрузку</option></select></div>
+  <div class="rq-line"><button class="primary" id="rq-send">Отправить</button></div>
+  <div class="err" id="rq-err"></div>
+  <h2>Мои запросы</h2>
+  <div id="rq-list"></div>
+</aside>
+
+
+<script src="/dashboard.js"></script>
+</body>
+</html>

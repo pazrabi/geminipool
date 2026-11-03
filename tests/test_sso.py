@@ -63,6 +63,13 @@ class SsoTests(unittest.TestCase):
         self.assertIsNone(r.getheader("X-Frame-Options"))
         self.assertIn(b"pool.embed", body)
 
+    def test_dashboard_assets_are_served(self):
+        for path, ctype in (("/dashboard.css", "text/css"), ("/dashboard.js", "text/javascript")):
+            status, body, r = self.get(path)
+            self.assertEqual(status, 200)
+            self.assertIn(ctype, r.getheader("Content-Type"))
+            self.assertGreater(len(body), 1000)
+
     def session(self, value, **extra):
         return self.get("/api/sso/session", {"Cookie": f"molokohub_sso={value}", **extra})
 

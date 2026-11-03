@@ -6,7 +6,6 @@ each task becomes a git branch `pool/<id>` plus a short report. Agents never mer
 - `app/` — the service (Python stdlib only): dispatcher, `agy` executor, MCP server, OAuth server, dashboard
 - `tests/` — `python3 -m unittest discover -s tests` (fake agent, real local git, real HTTP; no quota is spent)
 - `deploy/` — systemd unit, Caddyfile and setup notes for the server; `scripts/safe_deploy.sh` deploys
-- `Dockerfile`, `railway.toml` — the previous Railway deployment (kept as a fallback, no longer used)
 
 ## Environment variables (`/etc/gemini-pool.env` on the server)
 

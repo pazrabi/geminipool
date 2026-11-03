@@ -42,3 +42,6 @@
 
 ## 2026-11-03 — режим встраивания в molokohub.site
 - Панель отдаёт `Content-Security-Policy: frame-ancestors 'self' https://molokohub.site`; `?embed=1` (внутри iframe, запоминается в sessionStorage) скрывает полоску вкладок и «Выйти». Тест в test_sso.py, 183 теста OK. Общая оболочка: репозиторий pazrabi/molokohub.
+
+## 2026-11-03 — рефакторинг пула
+- `pool.py` (1383 строки) разбит: `pool_rules.py` (константы, схема, чистые функции), миксины `pool_accounts.py`, `pool_pipelines.py`, `pool_reports.py`; в `pool.py` осталось ядро (~700 строк). Дашборд разбит на `app/web/dashboard.{html,css,js}`, сервер отдаёт css/js без токена. Удалены неиспользуемые `Dockerfile`, `railway.toml`. 184 теста OK.

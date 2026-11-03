@@ -26,7 +26,13 @@ from pool import ROLES, Pool
 log = logging.getLogger("server")
 
 PROTOCOL_VERSION = "2025-03-26"
-DASHBOARD = Path(__file__).with_name("dashboard.html")
+WEB_DIR = Path(__file__).with_name("web")
+DASHBOARD = WEB_DIR / "dashboard.html"
+# public static files of the dashboard page (the page itself holds no data; every API call needs the token)
+DASHBOARD_ASSETS = {
+    "/dashboard.css": (WEB_DIR / "dashboard.css", "text/css; charset=utf-8"),
+    "/dashboard.js": (WEB_DIR / "dashboard.js", "text/javascript; charset=utf-8"),
+}
 _pool: Pool | None = None
 _oauth: OAuth | None = None
 _token: str = ""
@@ -480,6 +486,9 @@ button{{font:inherit;padding:10px 18px;cursor:pointer}}.err{{color:#c8382d}}.mon
             # The page itself holds no data; every API call below needs the token.
             return self._send(200, DASHBOARD.read_bytes(), "text/html; charset=utf-8",
                               {"Content-Security-Policy": "frame-ancestors 'self' https://molokohub.site"})
+        if path in DASHBOARD_ASSETS:
+            asset, ctype = DASHBOARD_ASSETS[path]
+            return self._send(200, asset.read_bytes(), ctype)
         if path == "/api/sso/session":
             return self._sso_session()
         if path.startswith("/api/"):
