@@ -478,7 +478,8 @@ button{{font:inherit;padding:10px 18px;cursor:pointer}}.err{{color:#c8382d}}.mon
             return self._send(405, b'{"error": "use POST"}', headers={"Allow": "POST"})
         if path in ("/", "/index.html"):
             # The page itself holds no data; every API call below needs the token.
-            return self._send(200, DASHBOARD.read_bytes(), "text/html; charset=utf-8")
+            return self._send(200, DASHBOARD.read_bytes(), "text/html; charset=utf-8",
+                              {"Content-Security-Policy": "frame-ancestors 'self' https://molokohub.site"})
         if path == "/api/sso/session":
             return self._sso_session()
         if path.startswith("/api/"):

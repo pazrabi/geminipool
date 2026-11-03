@@ -39,3 +39,6 @@
 - Бэкапы данных сервера (есть одна копия БД `backups/pool-before-pipelines.db`).
 - Удалить `Dockerfile`, `railway.toml`, `~/projects/.gemini-pool-mcp-token.railway-old`.
 - Настоящее ревью у Flash может быть слабым, проверить на первых рабочих задачах.
+
+## 2026-11-03 — режим встраивания в molokohub.site
+- Панель отдаёт `Content-Security-Policy: frame-ancestors 'self' https://molokohub.site`; `?embed=1` (внутри iframe, запоминается в sessionStorage) скрывает полоску вкладок и «Выйти». Тест в test_sso.py, 183 теста OK. Общая оболочка: репозиторий pazrabi/molokohub.

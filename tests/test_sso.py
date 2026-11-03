@@ -56,6 +56,13 @@ class SsoTests(unittest.TestCase):
         conn.close()
         return r.status, body, r
 
+    def test_dashboard_can_be_framed_only_by_molokohub(self):
+        status, body, r = self.get("/")
+        self.assertEqual(status, 200)
+        self.assertEqual(r.getheader("Content-Security-Policy"), "frame-ancestors 'self' https://molokohub.site")
+        self.assertIsNone(r.getheader("X-Frame-Options"))
+        self.assertIn(b"pool.embed", body)
+
     def session(self, value, **extra):
         return self.get("/api/sso/session", {"Cookie": f"molokohub_sso={value}", **extra})
 

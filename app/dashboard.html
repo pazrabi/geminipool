@@ -4,6 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Gemini Pool</title>
+<script>
+  // ?embed=1: panel inside the molokohub.site shell (no own tabs bar / logout); remembered per tab
+  (function () {
+    try {
+      if (location.search.indexOf("embed=1") >= 0) sessionStorage.setItem("pool.embed", "1");
+      if (window.self !== window.top && sessionStorage.getItem("pool.embed") === "1") document.documentElement.classList.add("embed");
+    } catch (e) {}
+  })();
+</script>
 <style>
 :root {
   --bg: #f6f7f9; --card: #ffffff; --ink: #1b1f27; --muted: #6b7380; --line: #e3e6eb;
@@ -123,6 +132,7 @@ main { transition: margin .2s ease; }
 #task-panel select { max-width: 100%; }
 .req { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 8px; }
 .req .goal { margin-top: 6px; }
+html.embed .tool-tabs, html.embed #logout { display: none; }
 .tool-tabs { display: flex; align-items: center; gap: 10px; height: 56px; padding: 0 20px; background: var(--card);
   border-bottom: 1px solid var(--line); overflow-x: auto; white-space: nowrap; }
 .tool-tab { display: inline-flex; align-items: center; padding: 8px 16px; border-radius: 999px; color: var(--muted);
