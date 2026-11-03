@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+import agent_mcp
 import git_ops
 import housekeeping
 import uploads as uploads_mod
@@ -448,6 +449,10 @@ class Pool:
             (self.profiles / account_id).mkdir(parents=True, exist_ok=True)
             self._save_accounts()
             self._sync_accounts()
+        try:
+            agent_mcp.sync_profile(self.profiles / account_id, agent_mcp.load(self.data))
+        except (OSError, ValueError) as exc:
+            log.error("MCP servers for %s not written: %s", account_id, exc)
         return next(a for a in self.list_accounts() if a["id"] == account_id)
 
     def _next_egress_port(self) -> int:

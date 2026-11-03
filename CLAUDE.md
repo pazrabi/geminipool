@@ -12,6 +12,7 @@
 - Сервер: Aéza VPS `193.41.86.92`, Ubuntu, `/opt/gemini-pool`, данные `/var/lib/gemini-pool`, конфиг `/etc/gemini-pool.env`, юниты `gemini-pool` и `gemini-egress`, HTTPS через Caddy (sslip.io). SSH-ключ `~/.ssh/aeza_pool`.
 - Токен доступа: `~/projects/.gemini-pool-mcp-token`. Никогда не печатать его в ответах (даже частично).
 - Аккаунты: `accounts.json` в данных сервера. Добавление: `scripts/add_account.sh <id> [роль]`. Роль у существующего меняется правкой `accounts.json` и рестартом.
+- MCP-серверы для агентов (хаб телефонов): `app/agent_mcp.py`, список `agent_mcp.json` в данных сервера, секреты через `${VAR}` из `/etc/gemini-pool.env`.
 - `Dockerfile` и `railway.toml` остались от старого Railway, проект там удалён, файлы не используются.
 
 ## Правила работы

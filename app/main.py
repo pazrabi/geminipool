@@ -10,6 +10,7 @@ import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import agent_mcp
 import executor
 import housekeeping
 import server
@@ -44,6 +45,8 @@ async def main() -> None:
         max_concurrent=int(os.environ.get("POOL_MAX_CONCURRENT", "0")),
         models_lister=executor.agy_models,
     )
+    given = agent_mcp.sync_all(data, pool.profiles)
+    logging.getLogger("main").info("MCP servers for agents: %s", {k: v for k, v in given.items() if v} or "none")
     server.configure(pool, token, OAuth(pool.db_path, token))
     # Railway needs 0.0.0.0; on a server behind a reverse proxy set POOL_BIND=127.0.0.1.
     bind = os.environ.get("POOL_BIND", "0.0.0.0")
