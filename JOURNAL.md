@@ -45,3 +45,4 @@
 
 ## 2026-11-03 — рефакторинг пула
 - `pool.py` (1383 строки) разбит: `pool_rules.py` (константы, схема, чистые функции), миксины `pool_accounts.py`, `pool_pipelines.py`, `pool_reports.py`; в `pool.py` осталось ядро (~700 строк). Дашборд разбит на `app/web/dashboard.{html,css,js}`, сервер отдаёт css/js без токена. Удалены неиспользуемые `Dockerfile`, `railway.toml`. 184 теста OK.
+- `server.py` (763 строки) → 524: MCP-часть вынесена в `mcp_rpc.py`, данные дашборда в `dashboard_api.py`. 184 теста OK.

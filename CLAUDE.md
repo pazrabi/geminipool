@@ -13,7 +13,7 @@
 - Токен доступа: `~/projects/.gemini-pool-mcp-token`. Никогда не печатать его в ответах (даже частично).
 - Аккаунты: `accounts.json` в данных сервера. Добавление: `scripts/add_account.sh <id> [роль]`. Роль у существующего меняется правкой `accounts.json` и рестартом.
 - MCP-серверы для агентов (хаб телефонов): `app/agent_mcp.py`, список `agent_mcp.json` в данных сервера, секреты через `${VAR}` из `/etc/gemini-pool.env`.
-- Структура `app/`: `pool.py` (ядро: БД, диспетчер, запуск задач) + миксины `pool_accounts.py`, `pool_pipelines.py`, `pool_reports.py`; `pool_rules.py` (константы, схема БД, чистые функции); `server.py` (HTTP, MCP, OAuth), `web/` (дашборд: `dashboard.html`, `.css`, `.js`, отдаются сервером без токена).
+- Структура `app/`: `pool.py` (ядро: БД, диспетчер, запуск задач) + миксины `pool_accounts.py`, `pool_pipelines.py`, `pool_reports.py`; `pool_rules.py` (константы, схема БД, чистые функции); `server.py` (HTTP-обработчик, OAuth), `mcp_rpc.py` (MCP: инструменты и JSON-RPC), `dashboard_api.py` (данные дашборда), `web/` (дашборд: `dashboard.html`, `.css`, `.js`, отдаются сервером без токена).
 
 ## Правила работы
 - Деплой только через `scripts/safe_deploy.sh` (пауза приёма, ожидание простоя, rsync, рестарт, проверка). Не перезапускать сервис при идущих задачах.
